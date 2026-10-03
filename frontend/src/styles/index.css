@@ -1,0 +1,182 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  min-height: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  background: #ffffff;
+  color: #111111;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: rgba(59, 130, 246, 0.15);
+  color: #111111;
+}
+
+/* ─── Scrollbar ──────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #e5e7eb;
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #d1d5db;
+}
+
+/* ─── Markdown ───────────────────────────────── */
+.markdown-body p {
+  margin: 0.75em 0;
+  line-height: 1.78;
+}
+
+.markdown-body h1 {
+  font-size: 1.35em;
+  font-weight: 600;
+  margin: 1.2em 0 0.5em;
+  letter-spacing: -0.01em;
+}
+
+.markdown-body h2 {
+  font-size: 1.15em;
+  font-weight: 600;
+  margin: 1.1em 0 0.45em;
+}
+
+.markdown-body h3 {
+  font-size: 1.02em;
+  font-weight: 600;
+  margin: 1em 0 0.4em;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.25rem;
+  margin: 0.5em 0;
+  line-height: 1.78;
+}
+
+.markdown-body li {
+  margin: 0.2em 0;
+}
+
+.markdown-body pre {
+  background: #f8f9fa;
+  border: 1px solid #efefef;
+  border-radius: 12px;
+  padding: 1rem 1.125rem;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.65;
+  margin: 0.85em 0;
+}
+
+.markdown-body code {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875em;
+}
+
+.markdown-body :not(pre) > code {
+  background: #f3f4f6;
+  padding: 0.1em 0.38em;
+  border-radius: 5px;
+  font-size: 0.85em;
+  border: 1px solid #e8eaed;
+}
+
+.markdown-body a {
+  color: #2563eb;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(37, 99, 235, 0.25);
+  transition: border-color 0.15s;
+}
+
+.markdown-body a:hover {
+  border-color: rgba(37, 99, 235, 0.6);
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid #e5e7eb;
+  padding-left: 1rem;
+  margin: 0.75em 0;
+  color: #6b7280;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  margin: 0.85em 0;
+}
+
+.markdown-body th {
+  border-bottom: 2px solid #f0f0f0;
+  padding: 0.5rem 0.5rem;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.85em;
+  color: #374151;
+}
+
+.markdown-body td {
+  border-bottom: 1px solid #f5f5f5;
+  padding: 0.45rem 0.5rem;
+  text-align: left;
+  color: #374151;
+}
+
+.markdown-body tr:last-child td {
+  border-bottom: none;
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid #f0f0f0;
+  margin: 1.25em 0;
+}
+
+/* ─── Input glow ─────────────────────────────── */
+.input-glow-idle {
+  box-shadow: 0 8px 36px -16px rgba(59, 130, 246, 0.22);
+}
+
+.input-glow-active {
+  box-shadow: 0 12px 48px -16px rgba(59, 130, 246, 0.42), 0 0 0 3px rgba(59, 130, 246, 0.07);
+}
+
+/* ─── Reduced motion ─────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ─── Focus visible ──────────────────────────── */
+:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.5);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible) {
+  outline: none;
+}
