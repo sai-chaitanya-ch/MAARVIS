@@ -690,7 +690,7 @@ export default function VerificationAnalysisPanel({
               )}
             </div>
 
-            {/* Qdrant Chunks Section */}
+            {/* Document Chunks Section (pgvector) */}
             <div>
               <span className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider block mb-2">
                 Retrieved Vector Chunks (pgvector)

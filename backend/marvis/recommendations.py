@@ -81,13 +81,13 @@ def generate_recommendations(
         )
 
     # 3. Document Vector Store recommendation:
-    # If user provided a document or asks document query, but vector store (Qdrant / pgvector) is offline
+    # If user provided a document or asks document query, but vector store (Supabase pgvector) is offline
     if (has_attachment or required.rag) and not rag_connected:
         recommendations.append(
             {
                 "provider": "rag",
                 "name": "Document Vector Store",
-                "reason": "Document retrieval requires an active vector database (Qdrant or Supabase pgvector).",
+                "reason": "Document retrieval requires an active vector database (Supabase pgvector).",
                 "action_label": "Configure Vector Store",
                 "category": "rag",
             }
