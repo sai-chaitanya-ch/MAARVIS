@@ -15,6 +15,7 @@ class VerificationStatus(str, Enum):
     DIRECT_ANSWER = "direct_answer"
     NOT_VERIFIED = "not_verified"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    NOT_EVALUATED = "not_evaluated"
 
     @classmethod
     def _missing_(cls, value: object):
@@ -27,6 +28,8 @@ class VerificationStatus(str, Enum):
                 return cls.CONFLICTING
             if val_lower in {"insufficient_evidence", "not_verified", "unverifiable"}:
                 return cls.UNVERIFIED
+            if val_lower in {"not_evaluated", "unevaluated"}:
+                return cls.NOT_EVALUATED
             if val_lower in {"supported", "verified"}:
                 return cls.VERIFIED
             if val_lower in {"partially_supported", "partial", "partially_verified"}:

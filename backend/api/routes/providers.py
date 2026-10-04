@@ -1,14 +1,15 @@
 """
 Provider credentials API for MAARVIS.
-Secure CRUD + connection testing + active provider management.
+Secure user-scoped CRUD + connection testing + active provider management.
 Never returns raw API keys.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from security.auth import get_current_user_id
 from services.provider_service import (
     create_provider,
     list_providers,
@@ -18,11 +19,11 @@ from services.provider_service import (
     test_provider_connection,
     set_active_provider,
     ensure_provider_table,
+    get_system_capabilities,
 )
 
 router = APIRouter()
 
-# Ensure table exists on import
 try:
     ensure_provider_table()
 except Exception:
@@ -44,7 +45,6 @@ class ProviderUpdateRequest(BaseModel):
     is_active: Optional[bool] = None
 
 
-# Supported providers metadata (no keys, just display info)
 SUPPORTED_PROVIDERS = [
     {
         "id": "google",
@@ -114,20 +114,34 @@ SUPPORTED_PROVIDERS = [
 
 @router.get("/supported")
 async def get_supported_providers():
-    """Return supported provider list (no credentials)."""
+    """Return supported provider list (public metadata, no secrets)."""
     return {"providers": SUPPORTED_PROVIDERS}
 
 
 @router.get("/capabilities")
-async def get_capabilities():
-    """Return real system capabilities across required and optional layers."""
-    from services.provider_service import get_system_capabilities
-    return get_system_capabilities()
+async def get_capabilities(
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+):
+    """Return real system capabilities for the caller."""
+    user_id = None
+    try:
+        user_id = await get_current_user_id(request, authorization, x_user_id)
+    except Exception:
+        pass
+    return get_system_capabilities(user_id=user_id)
 
 
 @router.post("", status_code=201)
-async def create_provider_credential(body: ProviderCreateRequest):
-    """Store a new provider credential. Returns safe record (no raw key)."""
+async def create_provider_credential(
+    body: ProviderCreateRequest,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+):
+    """Store a new provider credential. Scoped strictly to authenticated user."""
+    user_id = await get_current_user_id(request, authorization, x_user_id)
     p_norm = body.provider.lower().strip()
     if p_norm == "gemini":
         p_norm = "google"
@@ -137,59 +151,102 @@ async def create_provider_credential(body: ProviderCreateRequest):
     valid_ids = [p["id"] for p in SUPPORTED_PROVIDERS]
     if p_norm not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unsupported provider: {body.provider}")
-    record = create_provider(p_norm, body.api_key, body.model, body.label, is_active=body.is_active)
+    record = create_provider(
+        provider=p_norm,
+        api_key=body.api_key,
+        model=body.model,
+        label=body.label,
+        user_id=user_id,
+        is_active=body.is_active,
+    )
     return record
 
 
 @router.get("")
-async def list_provider_credentials():
-    """List all configured providers. Never returns raw keys."""
-    return {"providers": list_providers()}
+async def list_provider_credentials(
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+):
+    """List all configured providers for the authenticated user. Never returns raw keys."""
+    user_id = await get_current_user_id(request, authorization, x_user_id)
+    return {"providers": list_providers(user_id=user_id)}
 
 
 @router.get("/{cred_id}")
-async def get_provider_credential(cred_id: str):
-    """Get a specific provider. Never returns raw key."""
-    record = get_provider(cred_id)
+async def get_provider_credential(
+    cred_id: str,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+):
+    """Get a specific provider credential. Returns 404 if not found or not owned."""
+    user_id = await get_current_user_id(request, authorization, x_user_id)
+    record = get_provider(cred_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Provider not found")
     return record
 
 
 @router.post("/{cred_id}/activate")
-async def activate_provider_credential(cred_id: str):
-    """Set provider as active AI provider."""
-    ok = set_active_provider(cred_id)
+async def activate_provider_credential(
+    cred_id: str,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+):
+    """Set provider as active AI provider for the authenticated user."""
+    user_id = await get_current_user_id(request, authorization, x_user_id)
+    ok = set_active_provider(cred_id, user_id=user_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Provider not found")
     return {"status": "activated", "id": cred_id}
 
 
 @router.patch("/{cred_id}")
-async def update_provider_credential(cred_id: str, body: ProviderUpdateRequest):
-    """Update provider fields. Encrypts new key if provided."""
-    record = get_provider(cred_id)
+async def update_provider_credential(
+    cred_id: str,
+    body: ProviderUpdateRequest,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+):
+    """Update provider fields for authenticated user."""
+    user_id = await get_current_user_id(request, authorization, x_user_id)
+    record = get_provider(cred_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Provider not found")
     updates = body.model_dump(exclude_none=True)
-    updated = update_provider(cred_id, updates)
+    updated = update_provider(cred_id, updates, user_id=user_id)
     return updated
 
 
 @router.delete("/{cred_id}")
-async def delete_provider_credential(cred_id: str):
-    """Delete a provider credential."""
-    ok = delete_provider(cred_id)
+async def delete_provider_credential(
+    cred_id: str,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+):
+    """Delete a provider credential. Returns 404 if not found or not owned."""
+    user_id = await get_current_user_id(request, authorization, x_user_id)
+    ok = delete_provider(cred_id, user_id=user_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Provider not found")
     return {"status": "deleted", "id": cred_id}
 
 
 @router.post("/{cred_id}/test")
-async def test_provider(cred_id: str):
-    """Test a provider connection using the stored key."""
-    record = get_provider(cred_id)
+async def test_provider(
+    cred_id: str,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+):
+    """Test a provider connection. Scoped to authenticated user."""
+    user_id = await get_current_user_id(request, authorization, x_user_id)
+    record = get_provider(cred_id, user_id=user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Provider not found")
-    result = await test_provider_connection(cred_id)
+    result = await test_provider_connection(cred_id, user_id=user_id)
     return result

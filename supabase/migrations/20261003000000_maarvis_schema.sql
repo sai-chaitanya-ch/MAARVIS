@@ -144,27 +144,27 @@ ALTER TABLE public.user_provider_credentials ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Users access own conversations"
     ON public.conversations
     FOR ALL
-    USING (auth.uid()::text = user_id OR user_id = 'default_user');
+    USING (auth.uid()::text = user_id);
 
 CREATE POLICY "Users access own messages"
     ON public.messages
     FOR ALL
-    USING (auth.uid()::text = user_id OR user_id = 'default_user');
+    USING (auth.uid()::text = user_id);
 
 CREATE POLICY "Users access own documents"
     ON public.documents
     FOR ALL
-    USING (auth.uid()::text = user_id OR user_id = 'default_user');
+    USING (auth.uid()::text = user_id);
 
 CREATE POLICY "Users access own document chunks"
     ON public.document_chunks
     FOR ALL
-    USING (auth.uid()::text = user_id OR user_id = 'default_user');
+    USING (auth.uid()::text = user_id);
 
 CREATE POLICY "Users access own provider credentials"
     ON public.user_provider_credentials
     FOR ALL
-    USING (auth.uid()::text = user_id OR user_id = 'default_user');
+    USING (auth.uid()::text = user_id);
 
 -- 9. Storage Bucket setup for documents
 INSERT INTO storage.buckets (id, name, public)
@@ -174,4 +174,4 @@ ON CONFLICT (id) DO NOTHING;
 CREATE POLICY "Users access own uploaded files"
     ON storage.objects
     FOR ALL
-    USING (bucket_id = 'documents' AND (auth.uid()::text = (storage.foldername(name))[1] OR name LIKE 'default_user/%'));
+    USING (bucket_id = 'documents' AND auth.uid()::text = (storage.foldername(name))[1]);

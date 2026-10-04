@@ -230,7 +230,7 @@ export default function VerificationAnalysisPanel({
   const agents: AgentRunRecord[] = executionTrace?.agents ?? [];
   const selectedAgent = agents.find((a) => a.agent_id === selectedAgentId) || agents[0];
 
-  // ── Real evidence chunks from Qdrant ────────────────────────────────────
+  // ── Real evidence chunks from Supabase pgvector ────────────────────────
   const relevantChunks = executionTrace?.evidence?.relevant_chunks ?? [];
 
   // Capabilities and Recommendations resolution
@@ -519,7 +519,7 @@ export default function VerificationAnalysisPanel({
                       {hasDocEvidence ? "✓" : "○"}
                     </span>
                     <div>
-                      <span className="font-semibold text-neutral-900">Document RAG (Qdrant)</span>
+                      <span className="font-semibold text-neutral-900">Document RAG (pgvector)</span>
                       <p className="text-[10.5px] text-neutral-500">
                         {hasDocEvidence
                           ? "Vector chunks retrieved and verified"
@@ -693,7 +693,7 @@ export default function VerificationAnalysisPanel({
             {/* Qdrant Chunks Section */}
             <div>
               <span className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider block mb-2">
-                Retrieved Vector Chunks (Qdrant)
+                Retrieved Vector Chunks (pgvector)
               </span>
               {relevantChunks.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-[#E5E7EB] p-4 text-center text-xs text-neutral-400">

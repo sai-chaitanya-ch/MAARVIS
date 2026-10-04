@@ -30,18 +30,15 @@ async def run_rag(
     # Primary: semantic vector search
     hits = await retrieve(question, document_ids=document_ids, user_id=user_id)
 
-    # Fallback: direct chunk scroll if semantic search returns nothing
-    # (happens with embedded Qdrant when a fresh instance starts without the collection
-    # fully cached in memory, or when cosine threshold filters everything out)
+    # Fallback: direct chunk fetch if semantic search returns nothing
+    # (happens when query terms have low cosine similarity against specialized documents)
     if not hits and document_ids:
         store = get_vector_store()
         hits = store.get_document_chunks(document_ids=document_ids, user_id=user_id, limit=12)
 
     if not hits:
         return {
-            "draft_answer": "I could not retrieve relevant passages from the uploaded document. "
-                            "Please try re-uploading the file — the server may have restarted and "
-                            "lost its in-memory index.",
+            "draft_answer": "I could not retrieve relevant passages from the uploaded document.",
             "document_context": [],
             "rag_failed": True,
         }

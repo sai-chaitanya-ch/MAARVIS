@@ -235,7 +235,7 @@ export default function AgentWorkflowGraph({
               })()}
             </div>
 
-            {/* BRANCH 2: RAG / Document + Qdrant */}
+            {/* BRANCH 2: RAG / Document + pgvector */}
             <div className="flex flex-col space-y-1.5">
               {(() => {
                 const st = getNodeStyle(rag, selectedAgentId === "rag_agent");
@@ -262,7 +262,7 @@ export default function AgentWorkflowGraph({
                 <ArrowDown size={9} className={rag?.status === "COMPLETED" ? "text-emerald-500" : "text-neutral-300"} />
               </div>
 
-              {/* Subnode: Qdrant Vector DB */}
+              {/* Subnode: Supabase pgvector DB */}
               <div
                 onClick={() => onSelectAgent("rag_agent")}
                 className={`rounded border px-2 py-1 text-center transition cursor-pointer text-[9.5px] font-mono ${
@@ -271,7 +271,7 @@ export default function AgentWorkflowGraph({
                     : "border-neutral-200 bg-white text-neutral-400"
                 }`}
               >
-                Qdrant (768d)
+                pgvector (768d)
               </div>
             </div>
 

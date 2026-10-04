@@ -6,7 +6,8 @@ python-multipart==0.0.20
 httpx==0.28.1
 langgraph==0.2.62
 langchain-core==0.3.28
-qdrant-client==1.12.1
+cryptography>=43.0.0
+PyJWT>=2.8.0
 pymupdf==1.25.1
 python-docx==1.1.2
 aiosqlite==0.20.0

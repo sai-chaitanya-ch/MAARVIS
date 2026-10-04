@@ -201,6 +201,9 @@ async def triage(
         except ValueError:
             category = JevCategory.FACTUAL_RAG
         route = _CATEGORY_TO_ROUTE.get(category, MarvisRoute.MULTI_AGENT)
+        if not has_attachment and route == MarvisRoute.MULTI_AGENT_RAG:
+            route = MarvisRoute.MULTI_AGENT
+            jev_result["requires_rag"] = False
         log.info(f"MARVIS: stage=3 engine=FALLBACK category={category} route={route}")
         req_caps_fallback = detect_capabilities(message, mode, document_ids, jev_category=category)
         return TriageDecision(
@@ -209,7 +212,7 @@ async def triage(
             category=category,
             reasoning=f"JEV unavailable; deterministic fallback classified as {category.value}.",
             confidence=None,
-            requires_rag=jev_result["requires_rag"],
+            requires_rag=jev_result["requires_rag"] if has_attachment else False,
             requires_sandbox=jev_result["requires_sandbox"],
             escalated_by_attachment=False,
             routing_engine=RoutingEngine.STAGE3_FALLBACK,

@@ -235,11 +235,27 @@ export interface StreamEvent {
   [key: string]: unknown;
 }
 
-const BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-const API = `${BASE_URL}/api`;
+import { getAuthToken } from "./supabase";
+
+export const BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+export const API = `${BASE_URL}/api`;
+
+export async function getAuthHeaders(extraHeaders: Record<string, string> = {}): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { ...extraHeaders };
+  try {
+    const token = await getAuthToken();
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+  } catch {
+    // ignore
+  }
+  return headers;
+}
 
 export async function fetchCapabilities(): Promise<SystemCapabilities> {
-  const response = await fetch(`${API}/providers/capabilities`);
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API}/providers/capabilities`, { headers });
   if (!response.ok) throw new Error("Failed to fetch system capabilities");
   return response.json();
 }
@@ -251,21 +267,24 @@ export async function fetchHealth() {
 }
 
 export async function fetchConversations() {
-  const response = await fetch(`${API}/conversations`);
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API}/conversations`, { headers });
   if (!response.ok) throw new Error("Could not load conversations");
   return response.json();
 }
 
 export async function fetchConversation(id: string) {
-  const response = await fetch(`${API}/conversations/${id}`);
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API}/conversations/${id}`, { headers });
   if (!response.ok) throw new Error("Conversation not found");
   return response.json();
 }
 
 export async function createConversation(title?: string): Promise<{ id: string }> {
+  const headers = await getAuthHeaders({ "Content-Type": "application/json" });
   const response = await fetch(`${API}/conversations`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ title: title || "New Conversation" }),
   });
   if (!response.ok) throw new Error("Could not create conversation");
@@ -273,7 +292,8 @@ export async function createConversation(title?: string): Promise<{ id: string }
 }
 
 export async function deleteConversation(id: string): Promise<{ ok: boolean }> {
-  const response = await fetch(`${API}/conversations/${id}`, { method: "DELETE" });
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API}/conversations/${id}`, { method: "DELETE", headers });
   if (!response.ok) throw new Error("Could not delete conversation");
   return response.json();
 }
@@ -308,13 +328,15 @@ export interface RAGChatResponse {
 }
 
 export async function fetchDocuments(): Promise<DocumentItem[]> {
-  const response = await fetch(`${API}/documents`);
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API}/documents`, { headers });
   if (!response.ok) throw new Error("Could not load documents");
   return response.json();
 }
 
 export async function deleteDocument(documentId: string): Promise<{ status: string; document_id: string }> {
-  const response = await fetch(`${API}/documents/${documentId}`, { method: "DELETE" });
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API}/documents/${documentId}`, { method: "DELETE", headers });
   if (!response.ok) throw new Error("Could not delete document");
   return response.json();
 }
@@ -326,9 +348,10 @@ export async function uploadDocument(file: File): Promise<{
   chunks: number;
   status: string;
 }> {
+  const headers = await getAuthHeaders();
   const data = new FormData();
   data.append("file", file);
-  const response = await fetch(`${API}/documents/upload`, { method: "POST", body: data });
+  const response = await fetch(`${API}/documents/upload`, { method: "POST", headers, body: data });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: "Upload failed" }));
     throw new Error(err.detail || "Upload failed");
@@ -340,9 +363,10 @@ export async function chatWithDocuments(payload: {
   message: string;
   document_ids?: string[];
 }): Promise<RAGChatResponse> {
+  const headers = await getAuthHeaders({ "Content-Type": "application/json" });
   const response = await fetch(`${API}/documents/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
@@ -363,9 +387,10 @@ export async function streamChat(
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal
 ) {
+  const headers = await getAuthHeaders({ "Content-Type": "application/json" });
   const response = await fetch(`${API}/chat/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
     signal,
   });
@@ -570,27 +595,31 @@ export interface VerificationRun {
 }
 
 export async function fetchEvaluationCases(): Promise<{ total: number; cases: EvaluationCase[] }> {
-  const response = await fetch(`${API}/evaluation/cases`);
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API}/evaluation/cases`, { headers });
   if (!response.ok) throw new Error("Failed to fetch evaluation test cases");
   return response.json();
 }
 
 export async function fetchEvaluationBenchmarks(): Promise<SystemBenchmarksData> {
-  const response = await fetch(`${API}/evaluation/benchmarks`);
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API}/evaluation/benchmarks`, { headers });
   if (!response.ok) throw new Error("Failed to fetch evaluation benchmarks");
   return response.json();
 }
 
 export async function fetchLatestEvaluationRun(): Promise<VerificationRun> {
-  const response = await fetch(`${API}/evaluation/latest`);
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API}/evaluation/latest`, { headers });
   if (!response.ok) throw new Error("Failed to fetch latest verification run");
   return response.json();
 }
 
 export async function executeEvaluationRun(payload: { case_id?: string; query?: string }): Promise<VerificationRun> {
+  const headers = await getAuthHeaders({ "Content-Type": "application/json" });
   const response = await fetch(`${API}/evaluation/run`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
@@ -599,3 +628,97 @@ export async function executeEvaluationRun(payload: { case_id?: string; query?: 
   }
   return response.json();
 }
+
+// ---------------------------------------------------------------------
+// Provider Credential Management API
+// ---------------------------------------------------------------------
+
+export interface StoredProvider {
+  id: string;
+  provider: string;
+  label: string;
+  model: string;
+  key_masked: string;
+  status: "connected" | "failed" | "unchecked";
+  is_active?: number;
+  last_tested_at?: string;
+  created_at: string;
+}
+
+export interface SupportedProviderInfo {
+  id: string;
+  name: string;
+  models: string[];
+}
+
+export async function fetchSupportedProviders(): Promise<SupportedProviderInfo[]> {
+  const headers = await getAuthHeaders();
+  const r = await fetch(`${API}/providers/supported`, { headers });
+  if (!r.ok) return [];
+  const d = await r.json();
+  return d.providers || [];
+}
+
+export async function fetchProviders(): Promise<StoredProvider[]> {
+  const headers = await getAuthHeaders();
+  const r = await fetch(`${API}/providers`, { headers });
+  if (!r.ok) return [];
+  const d = await r.json();
+  return d.providers || [];
+}
+
+export async function saveProviderCredential(data: {
+  provider: string;
+  api_key: string;
+  model?: string;
+  label?: string;
+}): Promise<StoredProvider> {
+  const headers = await getAuthHeaders({ "Content-Type": "application/json" });
+  const r = await fetch(`${API}/providers`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ detail: "Failed to save provider" }));
+    throw new Error(err.detail || "Failed to save provider");
+  }
+  return r.json();
+}
+
+export async function updateProviderCredential(
+  id: string,
+  data: { api_key?: string; model?: string; label?: string }
+): Promise<StoredProvider> {
+  const headers = await getAuthHeaders({ "Content-Type": "application/json" });
+  const r = await fetch(`${API}/providers/${id}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ detail: "Failed to update provider" }));
+    throw new Error(err.detail || "Failed to update provider");
+  }
+  return r.json();
+}
+
+export async function testProviderCredential(id: string): Promise<{ success: boolean; provider?: string; error?: string }> {
+  const headers = await getAuthHeaders();
+  const r = await fetch(`${API}/providers/${id}/test`, { method: "POST", headers });
+  return r.json();
+}
+
+export async function activateProviderCredential(id: string): Promise<{ ok: boolean }> {
+  const headers = await getAuthHeaders();
+  const r = await fetch(`${API}/providers/${id}/activate`, { method: "POST", headers });
+  return r.json();
+}
+
+export async function deleteProviderCredential(id: string): Promise<{ ok: boolean }> {
+  const headers = await getAuthHeaders();
+  const r = await fetch(`${API}/providers/${id}`, { method: "DELETE", headers });
+  if (!r.ok) throw new Error("Failed to delete provider");
+  return r.json();
+}
+

@@ -22,7 +22,7 @@ async def test_health():
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert "qdrant" in body
+    assert "vector_store" in body
 
 
 @pytest.mark.asyncio

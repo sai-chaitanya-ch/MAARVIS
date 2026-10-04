@@ -27,7 +27,20 @@ import {
   Bot,
   Search,
 } from "lucide-react";
-import { fetchHealth, fetchCapabilities, SystemCapabilities } from "../lib/api";
+import {
+  fetchHealth,
+  fetchCapabilities,
+  SystemCapabilities,
+  fetchProviders,
+  fetchSupportedProviders,
+  saveProviderCredential,
+  updateProviderCredential,
+  testProviderCredential,
+  activateProviderCredential,
+  deleteProviderCredential,
+  StoredProvider as Provider,
+  SupportedProviderInfo as SupportedProvider,
+} from "../lib/api";
 
 export type SettingsTab = "general" | "providers" | "data" | "security" | "account";
 
@@ -35,26 +48,6 @@ interface SettingsModalProps {
   initialTab?: SettingsTab;
   onClose: () => void;
 }
-
-interface Provider {
-  id: string;
-  provider: string;
-  label: string;
-  model: string;
-  key_masked: string;
-  status: "connected" | "failed" | "unchecked";
-  is_active?: boolean;
-  last_tested_at?: string;
-  created_at: string;
-}
-
-interface SupportedProvider {
-  id: string;
-  name: string;
-  models: string[];
-}
-
-const API = "/api";
 
 export default function SettingsModal({ initialTab = "general", onClose }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
@@ -90,13 +83,13 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
   const loadProvidersData = () => {
     setLoadingProviders(true);
     Promise.all([
-      fetch(`${API}/providers/supported`).then((r) => r.json()),
-      fetch(`${API}/providers`).then((r) => r.json()),
+      fetchSupportedProviders(),
+      fetchProviders(),
       fetchCapabilities().catch(() => null),
     ])
       .then(([supData, provData, capData]) => {
-        setSupported(supData.providers || []);
-        setProviders(provData.providers || []);
+        setSupported(supData || []);
+        setProviders(provData || []);
         if (capData) setCapabilities(capData);
       })
       .catch(() => {
@@ -133,21 +126,11 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
         if (form.label) payload.label = form.label;
         if (form.api_key) payload.api_key = form.api_key;
 
-        const res = await fetch(`${API}/providers/${editingProviderId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) throw new Error((await res.json()).detail || "Failed to update provider");
+        await updateProviderCredential(editingProviderId, payload);
         setProviderSuccess("Provider updated successfully");
       } else {
         // Create new provider
-        const res = await fetch(`${API}/providers`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(form),
-        });
-        if (!res.ok) throw new Error((await res.json()).detail || "Failed to add provider");
+        await saveProviderCredential(form);
         setProviderSuccess("Provider credential encrypted and stored safely");
       }
 
@@ -166,8 +149,7 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
     setTestingId(id);
     setProviderError(null);
     try {
-      const res = await fetch(`${API}/providers/${id}/test`, { method: "POST" });
-      const data = await res.json();
+      const data = await testProviderCredential(id);
       loadProvidersData();
       if (data.success) {
         setProviderSuccess("Connection test passed successfully!");
@@ -185,8 +167,7 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
     if (!confirm("Remove this provider credential?")) return;
     setDeletingId(id);
     try {
-      const res = await fetch(`${API}/providers/${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Delete failed");
+      await deleteProviderCredential(id);
       setProviders((prev) => prev.filter((p) => p.id !== id));
       setProviderSuccess("Provider removed");
     } catch {
@@ -229,8 +210,7 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
 
   const handleActivateProvider = async (id: string) => {
     try {
-      const res = await fetch(`${API}/providers/${id}/activate`, { method: "POST" });
-      if (!res.ok) throw new Error("Failed to activate provider");
+      await activateProviderCredential(id);
       setProviderSuccess("Active AI provider updated");
       loadProvidersData();
     } catch (err: any) {
@@ -392,7 +372,7 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
                       <span className="text-[9.5px] font-medium text-emerald-600 bg-emerald-50 px-1 rounded">ACTIVE</span>
                     </div>
                     <span className="font-semibold text-neutral-900 mt-0.5 block font-mono">
-                      Qdrant (768-dim Embeddings)
+                      Supabase pgvector (768-dim)
                     </span>
                   </div>
                   <div className="rounded-lg bg-white p-2.5 border border-[#E5E7EB]">
@@ -416,7 +396,7 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
                   <span>Real Execution &amp; Verification Guarantee</span>
                 </div>
                 <p className="text-emerald-900/80 text-[11.5px] leading-relaxed">
-                  MAARVIS guarantees that factual claims undergo claim extraction and grounding against authentic Qdrant vector chunks and live sources before presentation. Direct conversational responses bypass verification with 0 false claims.
+                  MAARVIS guarantees that factual claims undergo claim extraction and grounding against authentic pgvector document chunks and live sources before presentation. Direct conversational responses bypass verification with 0 false claims.
                 </p>
               </div>
             </div>
@@ -877,12 +857,12 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
             <div className="space-y-4 text-xs">
               <div className="rounded-xl border border-[#E5E7EB] bg-[#F8F9FA] p-4 space-y-3">
                 <span className="font-bold text-neutral-800 uppercase tracking-wider text-[10.5px] block">
-                  Qdrant Vector Database
+                  Supabase pgvector Database
                 </span>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="rounded-lg bg-white p-2.5 border border-[#E5E7EB]">
-                    <span className="text-neutral-400 block text-[10px] uppercase">Collection Name</span>
-                    <span className="font-mono text-neutral-900 font-semibold">maarvis_documents</span>
+                    <span className="text-neutral-400 block text-[10px] uppercase">Table / Schema</span>
+                    <span className="font-mono text-neutral-900 font-semibold">document_chunks (pgvector)</span>
                   </div>
                   <div className="rounded-lg bg-white p-2.5 border border-[#E5E7EB]">
                     <span className="text-neutral-400 block text-[10px] uppercase">Vector Dimensions</span>
@@ -913,16 +893,16 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
 
               <div className="rounded-xl border border-[#E5E7EB] bg-[#F8F9FA] p-4 space-y-3">
                 <span className="font-bold text-neutral-800 uppercase tracking-wider text-[10.5px] block">
-                  Local Persistence
+                  Cloud Persistence
                 </span>
                 <div className="grid grid-cols-2 gap-3 font-mono text-[11px]">
                   <div className="rounded-lg bg-white p-2.5 border border-[#E5E7EB]">
                     <span className="text-neutral-400 block text-[10px] uppercase font-sans">Database</span>
-                    <span>sqlite:///./data/maarvis.db</span>
+                    <span>Supabase PostgreSQL + RLS</span>
                   </div>
                   <div className="rounded-lg bg-white p-2.5 border border-[#E5E7EB]">
-                    <span className="text-neutral-400 block text-[10px] uppercase font-sans">Embedded Qdrant</span>
-                    <span>backend/data/qdrant_storage</span>
+                    <span className="text-neutral-400 block text-[10px] uppercase font-sans">Document Storage</span>
+                    <span>Supabase Storage (documents)</span>
                   </div>
                 </div>
               </div>

@@ -1,4 +1,3 @@
-````markdown
 # MAARVIS
 
 ### Ask. Analyze. Verify.
@@ -64,7 +63,7 @@ A complex research problem should receive multi-agent reasoning and verification
                                       │
                                       ▼
                                 Final Response
-````
+```
 
 MAARVIS supports both automatic routing and explicit user control.
 
@@ -101,98 +100,37 @@ Designed for simple and low-complexity requests.
 Examples:
 
 * Greetings
-* Basic explanations
-* Simple definitions
-* Low-risk summaries
-* Straightforward conversations
+* Conversational responses
+* Formatting requests
+* Simple explanations
 
-The objective is to avoid unnecessary orchestration.
-
----
-
-## Multi-Agent Force
-
-Allows the user to explicitly request the multi-agent workflow.
-
-This is useful when the user wants deeper analysis, multiple stages of reasoning, or visible agent execution.
+This path uses a single AI model call without running unnecessary background agents or complex verification pipelines.
 
 ---
 
-# Intelligent Routing
+## Multi-Agent
 
-MAARVIS categorizes queries before deciding how they should be processed.
+Designed for complex reasoning, research, document queries, and claim verification.
 
-Example categories include:
-
-### Conversational
+Queries in this mode are routed through specialized agents:
 
 ```text
-"Hi"
-"Explain recursion."
-"What is an API?"
-```
-
-→ Direct response
-
-### Quantitative / Deterministic
-
-```text
-"What is 238 × 421?"
-"Convert 100 million to the Indian numbering system."
-```
-
-→ Deterministic computation / sandbox
-
-### Code & Analysis
-
-```text
-"Analyze this Python code."
-"Find the bug in this program."
-```
-
-→ Coder / Analyst / sandbox where required
-
-### Factual / Document Research
-
-```text
-"What does this PDF say about revenue?"
-```
-
-→ RAG / document retrieval
-
-### Complex Research
-
-```text
-"Compare these conflicting claims and determine what the evidence supports."
-```
-
-→ Multi-agent research and verification
-
----
-
-# Multi-Agent Intelligence
-
-For complex tasks, MAARVIS can activate specialized components instead of sending every request through every agent.
-
-A typical workflow can look like:
-
-```text
-                    MARVIS Router
-                         │
-        ┌────────────────┼────────────────┐
-        │                │                │
-        ▼                ▼                ▼
-   Researcher       RAG / Document   Coder / Analyst
-        │                │                │
-        └────────────────┼────────────────┘
-                         ▼
-                Fact Verifier / Critic
-                         │
-                         ▼
-                    Synthesizer
-                         │
-                         ▼
-                   Final Answer
+                        Multi-Agent Request
+                                 │
+        ┌────────────────────────┼────────────────────────┐
+        │                        │                        │
+        ▼                        ▼                        ▼
+   Researcher              RAG / Document          Coder / Analyst
+        │                        │                        │
+        └────────────────────────┼────────────────────────┘
+                                 ▼
+                       Fact Verifier / Critic
+                                 │
+                                 ▼
+                            Synthesizer
+                                 │
+                                 ▼
+                            Final Answer
 ```
 
 Depending on the query, some components may be skipped.
@@ -203,32 +141,28 @@ Depending on the query, some components may be skipped.
 
 MAARVIS is designed to make the verification process visible rather than treating the final answer as a black box.
 
-The verification layer can evaluate different dimensions.
+The verification layer evaluates multiple dimensions:
 
 ### Computational Verification
-
 * Mathematical correctness
 * Numerical precision
 * Syntax checks
-* Sandbox execution
+* Isolated deterministic Python AST sandbox execution
 * Execution results
 
 ### Factual Verification
-
 * Claim decomposition
 * Retrieved evidence
 * Source attribution
 * Document grounding
 
 ### Logical Verification
-
 * Premise consistency
 * Deductive validity
 * Logical contradictions
 * Fallacy screening
 
 ### Risk & Contradiction Analysis
-
 * Conflicting evidence
 * Unsupported claims
 * Potential hallucination signals
@@ -238,81 +172,73 @@ The verification layer can evaluate different dimensions.
 
 # Document RAG
 
-MAARVIS can use user-provided documents as a source of context.
+MAARVIS uses user-provided documents as a verified source of context.
 
 ```text
-Document
+Document (PDF, DOCX, TXT)
     ↓
-Text Extraction
+Text Extraction & Chunking
     ↓
-Chunking
+768-dim Vector Embeddings
     ↓
-Embeddings
+Supabase pgvector Storage
     ↓
-Vector Storage
+Relevant Retrieval (Cosine Similarity)
     ↓
-Relevant Retrieval
+Agent Analysis & Claim Extraction
     ↓
-Agent Analysis
+Independent Verification
     ↓
-Verification
-    ↓
-Answer
+Synthesized Answer
 ```
 
-The goal is to allow users to research their own documents without leaving the MAARVIS workspace.
+Users can research their own documents with strict multi-tenant isolation.
 
 ---
 
 # Evidence & Transparency
 
-MAARVIS provides a verification-oriented interface where the user can inspect information associated with an execution.
+MAARVIS provides a verification-oriented interface where the user can inspect information associated with an execution:
 
-Depending on the query and available capabilities, this can include:
-
-* Execution route
+* Execution route & decision engine (Deterministic / JEV AI)
 * Provider/model used
-* Retrieved document chunks
-* Claims
-* Supporting evidence
-* Sources
+* Retrieved document chunks (Supabase pgvector)
+* Atomic claims extracted
+* Supporting evidence & confidence scores
+* Primary sources & domains
 * Agents that actually executed
-* Execution timing
+* Execution latency & token usage
 * Verification status
 
 The interface is designed around a **glass-box approach** rather than presenting every answer as an unexplained output.
 
 ---
 
-# API & Provider Architecture
+# API & Provider Architecture (BYOK)
 
 MAARVIS is designed around a provider abstraction rather than depending on a single AI gateway.
 
-Users can connect supported AI providers using their own API keys.
-
-Example:
+Users can connect supported AI providers using their own API keys (Bring Your Own Key):
 
 ```text
 API & Providers
 
-Google Gemini       ● Connected
-OpenAI              ○ Not configured
-Anthropic           ○ Not configured
-Groq                ○ Not configured
-DeepSeek            ○ Not configured
+Google Gemini       ● Connected (Core / Required)
+OpenAI              ○ Configurable
+Anthropic           ○ Configurable
+Groq                ○ Configurable
+DeepSeek            ○ Configurable
 ```
 
-A single configured provider should be sufficient for basic MAARVIS usage.
+A single configured provider (such as Google Gemini) is sufficient for core MAARVIS usage.
 
-Additional providers can provide additional capabilities, model choices, or redundancy.
+Additional providers can provide extra capabilities, model choices, or redundancy.
 
 ---
 
 # Optional Capabilities
 
-MAARVIS is designed to work without requiring every external service.
-
-For example:
+MAARVIS is designed to work gracefully even when optional services are absent:
 
 ```text
                  MAARVIS
@@ -324,89 +250,15 @@ For example:
      Required    Optional      Optional
 ```
 
-Other optional capabilities may include:
+* **JEV AI**: Optional semantic triage, calibrated confidence & advanced classification. When absent, high-precision deterministic AST/pattern fallbacks take over seamlessly.
+* **Tavily / Web Search**: Optional live web search verification. When absent, the system honestly reports external research unavailable without crashing.
+* **Document RAG**: Enabled automatically whenever documents are uploaded.
 
-* JEV AI for advanced decision/routing capabilities
-* Web search for current external information
-* Additional AI providers
-* Code execution/sandbox capabilities
-* Document retrieval
-
-Missing optional capabilities should reduce available functionality rather than make the entire application unusable.
-
----
-
-# Human + AI Development Philosophy
-
-One of the main lessons behind MAARVIS was that building an AI system is not simply about giving instructions to an AI coding tool.
-
-The human still needs to determine:
-
-```text
-Problem
-   ↓
-Architecture
-   ↓
-Decisions
-   ↓
-Query Categories
-   ↓
-Routing Logic
-   ↓
-Agent Responsibilities
-   ↓
-Verification Strategy
-   ↓
-Implementation
-```
-
-AI can accelerate implementation, experimentation, debugging, and iteration.
-
-But the system's architecture and decisions still need human reasoning.
-
-This project was built around that principle:
-
-> **Use AI as a powerful worker, while keeping the human responsible for the direction and decisions.**
-
----
-
-# Project Structure
-
-```text
-MAARVIS/
-│
-├── backend/
-│   ├── agents/
-│   ├── api/
-│   ├── config/
-│   ├── graph/
-│   ├── models/
-│   ├── rag/
-│   ├── security/
-│   ├── tools/
-│   └── verification/
-│
-├── frontend/
-│   ├── components/
-│   ├── pages/
-│   ├── services/
-│   └── ...
-│
-├── docs/
-│   ├── architecture/
-│   ├── research/
-│   └── ...
-│
-├── tests/
-│
-└── README.md
-```
+Missing optional capabilities honestly reduce available functionality rather than making the application unusable.
 
 ---
 
 # Production Architecture
-
-The planned production architecture is intentionally simple.
 
 ```text
                      MAARVIS
@@ -414,65 +266,116 @@ The planned production architecture is intentionally simple.
               ┌─────────┴─────────┐
               │                   │
            Netlify              Render
-          Frontend             Backend API
-                                  │
-                    ┌─────────────┼─────────────┐
-                    │             │             │
-                 AI APIs        RAG         Optional APIs
-                    │             │             │
-                    │          Supabase        │
-                    │             │             │
-                    └─────────────┴─────────────┘
-                                  │
-                              Supabase
-                         Auth / Database /
-                         Storage / Vector
+         React / Vite         FastAPI API
+              │                   │
+              └─────────┬─────────┘
+                        │
+                    Supabase
+         ┌──────────────┼──────────────┐
+         │              │              │
+      Supabase      PostgreSQL      Supabase
+        Auth        + pgvector      Storage
+         │              │              │
+         └──────────────┴──────────────┘
+                        │
+                        ▼
+                User AI Providers
+          Gemini / OpenAI / Anthropic /
+                Groq / DeepSeek
 ```
 
 The production architecture does **not** depend on:
-
 * A developer's laptop
 * A locally running AI gateway
 * OmniRoute
+* Qdrant
+* Persistent local SQLite databases
 * Hardcoded provider credentials
 
 ---
 
 # Security Principles
 
-MAARVIS is designed around server-side handling of provider credentials.
+MAARVIS enforces server-side handling and strict encryption for all provider credentials:
 
-Provider API keys should:
-
-* Never be exposed to client-side JavaScript
-* Never be committed to Git
-* Never be stored in browser localStorage
-* Never appear in logs
-* Be encrypted at rest
-* Be scoped to the authenticated user
+* **AES-256-GCM Encryption**: API keys are encrypted at rest using AES-256-GCM with unique 12-byte initialization vectors (nonces) and SHA-256 key derivation.
+* **Never Exposed to Frontend**: Raw keys never appear in GET responses, error traces, or logs. Responses return masked strings (e.g., `sk-...abcd`).
+* **Server-Side Only**: Decrypted keys exist solely in memory during transient provider calls.
+* **Strict User Isolation**: Conversations, messages, documents, chunks, and credentials are authenticated via Supabase JWT and isolated via Row Level Security (RLS).
+* **Production Authentication**: Unauthenticated requests in production return `401 Unauthorized`.
 
 ---
 
-# Development
+# Project Structure
 
-Clone the repository:
-
-```bash
-git clone <repository-url>
-cd MAARVIS
+```text
+MAARVIS/
+├── backend/
+│   ├── agents/               # Specialist agents (RAG, Math, Research, Coder, Verifier, Synthesizer)
+│   ├── api/                  # FastAPI routes (chat, documents, providers, health, evaluation)
+│   ├── config/               # Settings & environment configuration
+│   ├── graph/                # State machine & agent workflows
+│   ├── marvis/               # Router, dispatcher, and triage classification
+│   ├── memory/               # Conversation and document state persistence
+│   ├── models/               # LLM and embedding interfaces
+│   ├── providers/            # Direct provider adapters (Gemini, OpenAI, Anthropic, Groq, DeepSeek)
+│   ├── rag/                  # Ingestion, chunking, and Supabase pgvector store
+│   ├── security/             # AES-256-GCM encryption, JWT auth, and input sanitization
+│   ├── services/             # Supabase PostgREST client, Storage service, and Provider service
+│   └── tests/                # Automated pytest test suite (106 tests)
+├── frontend/
+│   ├── public/               # Static assets & Netlify _redirects
+│   └── src/                  # React 18 + Vite components, screens, hooks, and API client
+├── docs/                     # Architecture & technical documentation
+└── supabase/
+    └── migrations/           # PostgreSQL, pgvector & RLS schema migrations
 ```
 
-Install the required dependencies according to the frontend and backend setup.
+---
 
-Development instructions will be maintained as the production architecture is finalized.
+# Quick Start (Development)
+
+### 1. Backend Setup
+
+```bash
+cd backend
+python -m venv venv
+venv\Scripts\activate   # Windows (or source venv/bin/activate on Unix)
+pip install -r requirements.txt
+cp ../.env.example .env
+python main.py
+```
+
+### 2. Frontend Setup
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### 3. Run Automated Tests
+
+```bash
+py -m pytest backend/tests -v
+```
+
+---
+
+# Deployment
+
+Refer to [`DEPLOYMENT.md`](./DEPLOYMENT.md) for full step-by-step instructions to deploy:
+- Database, Auth & Vector Search on **Supabase**
+- Backend API on **Render**
+- Frontend Web App on **Netlify**
 
 ---
 
 # Current Development Status
 
-MAARVIS is an active development project.
+MAARVIS is actively maintained and fully migrated to production cloud architecture.
 
-### Implemented / In Development
+### Implemented & Verified
 
 * [x] MAARVIS assistant interface
 * [x] Auto / Direct Fast / Multi-Agent modes
@@ -480,30 +383,13 @@ MAARVIS is an active development project.
 * [x] Verification analysis interface
 * [x] Document RAG workflow
 * [x] Agent execution visualization
-* [ ] Persistent conversation history
-* [ ] Production provider management
-* [ ] Secure provider credential storage
-* [ ] Production RAG infrastructure
-* [ ] Production deployment
-* [ ] Expanded provider support
-
----
-
-# Research & Documentation
-
-The project documentation covers:
-
-* System architecture
-* Query classification
-* Intelligent routing
-* Execution modes
-* Agent responsibilities
-* Verification architecture
-* RAG
-* Decision-making concepts
-* Evaluation and testing
-
-See the `/docs` directory for the technical documentation.
+* [x] Persistent conversation history (Supabase PostgreSQL)
+* [x] Production provider management (BYOK)
+* [x] Secure provider credential storage (AES-256-GCM at rest)
+* [x] Production RAG infrastructure (Supabase pgvector, 768-dim)
+* [x] Production deployment (Netlify + Render + Supabase)
+* [x] Expanded provider support (Gemini, OpenAI, Anthropic, Groq, DeepSeek)
+* [x] Comprehensive automated test suite (106 passed tests)
 
 ---
 
@@ -536,6 +422,3 @@ Built during **HackFusion 2026**.
 ## License
 
 MIT License
-
-```
-```

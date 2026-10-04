@@ -1,56 +1,15 @@
 import { useState, useEffect } from "react";
 import { X, Plus, Trash2, CheckCircle2, AlertCircle, Loader2, Key } from "lucide-react";
 
-interface Provider {
-  id: string;
-  provider: string;
-  label: string;
-  model: string;
-  key_masked: string;
-  status: "connected" | "failed" | "unchecked";
-  last_tested_at?: string;
-  created_at: string;
-}
-
-interface SupportedProvider {
-  id: string;
-  name: string;
-  models: string[];
-}
-
-const API = "/api";
-
-async function fetchSupportedProviders(): Promise<SupportedProvider[]> {
-  const r = await fetch(`${API}/providers/supported`);
-  const d = await r.json();
-  return d.providers || [];
-}
-
-async function fetchProviders(): Promise<Provider[]> {
-  const r = await fetch(`${API}/providers`);
-  const d = await r.json();
-  return d.providers || [];
-}
-
-async function createProvider(data: { provider: string; api_key: string; model: string; label: string }) {
-  const r = await fetch(`${API}/providers`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  if (!r.ok) throw new Error((await r.json()).detail || "Failed");
-  return r.json();
-}
-
-async function deleteProvider(id: string) {
-  const r = await fetch(`${API}/providers/${id}`, { method: "DELETE" });
-  if (!r.ok) throw new Error("Failed to delete");
-}
-
-async function testProvider(id: string) {
-  const r = await fetch(`${API}/providers/${id}/test`, { method: "POST" });
-  return r.json();
-}
+import {
+  fetchSupportedProviders,
+  fetchProviders,
+  saveProviderCredential as createProvider,
+  deleteProviderCredential as deleteProvider,
+  testProviderCredential as testProvider,
+  StoredProvider as Provider,
+  SupportedProviderInfo as SupportedProvider,
+} from "../lib/api";
 
 export default function ProvidersModal({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<"providers" | "add">("providers");

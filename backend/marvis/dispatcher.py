@@ -46,6 +46,7 @@ async def dispatch(
 
     # Build workflow payload from triage decision, preserving caller keys
     workflow_payload = dict(payload)
+    has_docs = bool(payload.get("document_ids"))
 
     if route == MarvisRoute.DIRECT_FAST:
         workflow_payload.update(
@@ -86,6 +87,7 @@ async def dispatch(
                 "requires_web": not is_math and (payload.get("web_enabled") is not False),
                 "requires_math": is_math,
                 "requires_verification": True,
+                "requires_rag": False,
             }
         )
         log.info(f"MARVIS dispatch: route=MULTI_AGENT is_math={is_math} exec_id={exec_id}")
@@ -104,7 +106,7 @@ async def dispatch(
 
     events = state.get("agent_events") or (bus.events if bus else [])
     claims_raw = state.get("claim_results") or state.get("claims") or []
-    doc_context = state.get("document_context") or []
+    doc_context = state.get("document_context") or [] if has_docs else []
     sources_raw = state.get("sources") or []
 
     # Map event durations
@@ -123,12 +125,13 @@ async def dispatch(
         or any(op in payload.get("user_message", "") for op in ["+", "-", "*", "/", "="])
     )
 
+    user_id = payload.get("user_id")
     try:
         try:
             from providers.factory import get_active_provider
         except ImportError:
             from backend.providers.factory import get_active_provider
-        prov = get_active_provider()
+        prov = get_active_provider(user_id=user_id)
         active_llm_model = prov.model
         active_llm_gateway = f"{prov.display_name} API"
     except Exception:
@@ -173,7 +176,7 @@ async def dispatch(
             started_at=start_iso,
             completed_at=start_iso,
             latency_ms=event_durations.get("routing", 2),
-            input_summary=f"Mode: {decision.selected_mode.value}, Attachment: {bool(payload.get('document_ids'))}",
+            input_summary=f"Mode: {decision.selected_mode.value}, Attachment: {has_docs}",
             output_summary=f"Dispatched Route: {route.value} ({decision.reasoning})",
             model="marvis-triage-v2",
             gateway="Internal",
@@ -183,31 +186,30 @@ async def dispatch(
     )
 
     # 3. RAG / Document Agent
-    rag_executed = bool(state.get("requires_rag") or route == MarvisRoute.MULTI_AGENT_RAG or doc_context)
+    rag_executed = bool(has_docs and (state.get("requires_rag") or route == MarvisRoute.MULTI_AGENT_RAG or doc_context))
     agents_list.append(
         AgentRunRecord(
             agent_id="rag_agent",
             agent_name="RAG / Document Agent",
-            role="Vector Ingestion & Qdrant Search",
+            role="Vector Ingestion & pgvector Search",
             status=AgentStatus.COMPLETED if rag_executed else AgentStatus.SKIPPED,
             started_at=start_iso if rag_executed else None,
             completed_at=end_iso if rag_executed else None,
             latency_ms=event_durations.get("retrieval", 45) if rag_executed else 0,
             input_summary=(
-                f"Querying Qdrant collection: {settings.qdrant_collection} "
-                f"for document_ids: {payload.get('document_ids')}"
+                f"Querying Supabase pgvector for document_ids: {payload.get('document_ids')}"
                 if rag_executed
                 else "No document attached or required for this route"
             ),
             output_summary=(
-                f"Retrieved {len(doc_context)} relevant passage(s) with Qdrant cosine similarity"
+                f"Retrieved {len(doc_context)} relevant passage(s) with pgvector cosine similarity"
                 if rag_executed
                 else "Skipped (no document query)"
             ),
-            model="BAAI/bge-base-en-v1.5 (768-dim)",
-            gateway="Qdrant Vector Database",
+            model="768-dim pgvector",
+            gateway="Supabase PostgreSQL (pgvector)",
             tokens=None,
-            evidence_refs=[str(c.get("chunk_id") or c.get("id")) for c in doc_context],
+            evidence_refs=[str(c.get("chunk_id") or c.get("id")) for c in doc_context] if rag_executed else [],
         )
     )
 
@@ -323,46 +325,48 @@ async def dispatch(
         )
     )
 
-    # Extract real EvidenceChunks from document_context / sources
+    # Extract real EvidenceChunks strictly from current query document_context
     evidence_chunks: List[EvidenceChunk] = []
     seen_chunk_ids = set()
-    for ctx in doc_context:
-        cid = str(ctx.get("chunk_id") or ctx.get("id") or "")
-        if cid and cid not in seen_chunk_ids:
-            seen_chunk_ids.add(cid)
-            evidence_chunks.append(
-                EvidenceChunk(
-                    chunk_id=cid,
-                    page=int(ctx.get("page") or 1) if ctx.get("page") is not None else 1,
-                    similarity=float(ctx.get("rerank_score") or ctx.get("score") or 0.85),
-                    text=str(ctx.get("text") or "")[:800],
-                    source=ctx.get("source") or "Uploaded Document",
+    if has_docs:
+        for ctx in doc_context:
+            cid = str(ctx.get("chunk_id") or ctx.get("id") or "")
+            if cid and cid not in seen_chunk_ids:
+                seen_chunk_ids.add(cid)
+                evidence_chunks.append(
+                    EvidenceChunk(
+                        chunk_id=cid,
+                        page=int(ctx.get("page") or 1) if ctx.get("page") is not None else 1,
+                        similarity=float(ctx.get("rerank_score") or ctx.get("score") or 0.85),
+                        text=str(ctx.get("text") or "")[:800],
+                        source=ctx.get("source") or "Uploaded Document",
+                    )
                 )
-            )
 
     # Extract real EvidenceClaims
     evidence_claims: List[EvidenceClaim] = []
     sup_claims_count = 0
-    for idx, c in enumerate(claims_raw):
-        if not isinstance(c, dict):
-            continue
-        c_status = str(c.get("status") or "SUPPORTED").upper()
-        if c_status in {"SUPPORTED", "VERIFIED"}:
-            sup_claims_count += 1
-        evidence_claims.append(
-            EvidenceClaim(
-                claim_id=str(c.get("claim_id") or f"c{idx+1}"),
-                text=str(c.get("claim_text") or c.get("text") or ""),
-                status=c_status,
-                page=c.get("page") or (evidence_chunks[0].page if evidence_chunks else None),
-                source=c.get("source") or (evidence_chunks[0].source if evidence_chunks else None),
-                evidence_text=c.get("reason") or c.get("evidence"),
-                confidence=float(c.get("confidence") or 0.90) if c.get("confidence") else None,
+    if route != MarvisRoute.DIRECT_FAST:
+        for idx, c in enumerate(claims_raw):
+            if not isinstance(c, dict):
+                continue
+            c_status = str(c.get("status") or "SUPPORTED").upper()
+            if c_status in {"SUPPORTED", "VERIFIED"}:
+                sup_claims_count += 1
+            evidence_claims.append(
+                EvidenceClaim(
+                    claim_id=str(c.get("claim_id") or f"c{idx+1}"),
+                    text=str(c.get("claim_text") or c.get("text") or ""),
+                    status=c_status,
+                    page=c.get("page") or (evidence_chunks[0].page if evidence_chunks else None),
+                    source=c.get("source") or (evidence_chunks[0].source if evidence_chunks else None),
+                    evidence_text=c.get("reason") or c.get("evidence"),
+                    confidence=float(c.get("confidence") or 0.90) if c.get("confidence") else None,
+                )
             )
-        )
 
-    # Build real ExecutionEvidence
-    docs_used = len({c.source for c in evidence_chunks if c.source}) or (1 if evidence_chunks else 0)
+    # Build real ExecutionEvidence: If no documents used in this query, DOCS=0, CHUNKS=0
+    docs_used = len({c.source for c in evidence_chunks if c.source}) if has_docs else 0
     exec_evidence = ExecutionEvidence(
         documents_used=docs_used,
         claims_evaluated=len(evidence_claims),
@@ -372,7 +376,7 @@ async def dispatch(
     )
 
     # Check evidence types for NO FALSE VERIFICATION
-    has_doc_evidence = bool(docs_used > 0 and len(doc_context) > 0)
+    has_doc_evidence = bool(has_docs and docs_used > 0 and len(doc_context) > 0)
     has_web_evidence = bool(any(s.get("source_type") == "web" or s.get("url") for s in sources_raw))
     has_independent_evidence = has_doc_evidence or has_web_evidence
 
@@ -382,7 +386,6 @@ async def dispatch(
     elif route == MarvisRoute.DIRECT_SANDBOX or is_math:
         overall_status = "VERIFIED"
     elif not has_independent_evidence:
-        # NO FALSE VERIFICATION: If no independent evidence, never label VERIFIED
         overall_status = "UNVERIFIED"
     elif len(evidence_claims) > 0 and sup_claims_count == len(evidence_claims):
         overall_status = "VERIFIED"
@@ -393,8 +396,8 @@ async def dispatch(
     else:
         overall_status = "VERIFIED" if has_doc_evidence else "DIRECT_ANSWER"
 
-    # ── CONTEXT-AWARE API RECOMMENDATIONS ────────────────────────────────────
-    caps = get_system_capabilities()
+    # Context-aware API recommendations
+    caps = get_system_capabilities(user_id=user_id)
     user_query = payload.get("user_message", "")
     req_caps = decision.required_capabilities or detect_capabilities(
         user_query,
@@ -421,7 +424,7 @@ async def dispatch(
             "category": decision.category.value if decision.category else None,
             "confidence": decision.confidence,
             "complexity": "standard",
-            "requires_rag": decision.requires_rag,
+            "requires_rag": decision.requires_rag if has_docs else False,
             "requires_sandbox": decision.requires_sandbox,
             "reasoning": decision.reasoning,
         },

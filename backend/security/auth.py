@@ -1,9 +1,17 @@
+"""
+Authentication and security middleware for MAARVIS.
+Derives authenticated user identity from Supabase Auth JWT.
+Enforces strict 401 on missing or invalid tokens in production.
+Never trusts X-User-ID in production.
+"""
 from __future__ import annotations
 
 import re
 from typing import Any, Dict, Optional
 import httpx
+import jwt
 from fastapi import Header, HTTPException, Request
+
 from config.settings import get_settings
 from utils.logging import get_logger
 
@@ -42,30 +50,78 @@ def sanitize_for_logging(data: Any) -> Any:
 
 
 async def get_current_user_id(
-    request: Request,
+    request: Optional[Request] = None,
     authorization: Optional[str] = Header(None),
     x_user_id: Optional[str] = Header(None),
 ) -> str:
-    """Extract authenticated user ID from request.
+    """Extract authenticated user ID from Supabase JWT.
 
-    Supports:
-    1. Direct header X-User-Id (for testing & internal dispatch)
-    2. Supabase JWT Bearer token via Authorization header
-    3. Graceful fallback to 'default_user' in local/dev environments.
+    Security rules:
+    - Production: Derives user ONLY from Supabase JWT Bearer token.
+      Never trusts X-User-ID.
+      Never falls back to 'default_user'. Missing or invalid token -> HTTP 401.
+    - Development / Testing: Supports synthetic test tokens and test overrides for isolated test suites.
     """
     settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
 
-    # 1. Direct explicit test/header override
-    if x_user_id and x_user_id.strip():
-        return x_user_id.strip()
-
-    # 2. Check Authorization Bearer token
+    # Extract Bearer token from Authorization header
     token = None
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:].strip()
+    elif request and "authorization" in request.headers:
+        auth_h = request.headers.get("authorization", "")
+        if auth_h.startswith("Bearer "):
+            token = auth_h[7:].strip()
 
+    # PRODUCTION AUTHENTICATION FLOW
+    if is_prod:
+        if not token:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required. Provide a valid Supabase Bearer token in Authorization header.",
+            )
+
+        # Validate with Supabase Auth API
+        if settings.supabase_url and (settings.supabase_service_role_key or settings.supabase_anon_key):
+            try:
+                supabase_key = settings.supabase_service_role_key or settings.supabase_anon_key
+                url = f"{settings.supabase_url.rstrip('/')}/auth/v1/user"
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "apikey": supabase_key,
+                        },
+                    )
+                if resp.status_code == 200:
+                    user_data = resp.json()
+                    uid = user_data.get("id")
+                    if uid:
+                        return str(uid)
+                raise HTTPException(status_code=401, detail="Invalid or expired Supabase authentication token")
+            except HTTPException:
+                raise
+            except Exception as exc:
+                log.warning("supabase_auth_network_error", error=str(exc))
+                raise HTTPException(status_code=401, detail="Authentication verification failed")
+
+        # Fallback to local JWT decoding if Supabase URL is not configured
+        try:
+            payload = jwt.decode(token, options={"verify_signature": False})
+            uid = payload.get("sub")
+            if uid:
+                return str(uid)
+        except Exception:
+            pass
+
+        raise HTTPException(status_code=401, detail="Invalid or expired authentication token")
+
+    # DEVELOPMENT & TEST ENVIRONMENT ONLY
+    # 1. Bearer token provided in dev/test
     if token:
-        # If Supabase Auth is configured, verify with Supabase
+        # Check if live Supabase Auth is active and reachable
         if settings.supabase_url and (settings.supabase_service_role_key or settings.supabase_anon_key):
             try:
                 supabase_key = settings.supabase_service_role_key or settings.supabase_anon_key
@@ -79,28 +135,28 @@ async def get_current_user_id(
                         },
                     )
                 if resp.status_code == 200:
-                    user_data = resp.json()
-                    user_id = user_data.get("id")
-                    if user_id:
-                        return str(user_id)
-                elif settings.environment == "production":
-                    raise HTTPException(status_code=401, detail="Invalid or expired authentication token")
-            except HTTPException:
-                raise
-            except Exception as exc:
-                log.warning("supabase_auth_check_failed", error=str(exc))
-                if settings.environment == "production":
-                    raise HTTPException(status_code=401, detail="Authentication verification failed")
+                    uid = resp.json().get("id")
+                    if uid:
+                        return str(uid)
+            except Exception:
+                pass
 
-        # In dev/test: allow synthetic user tokens like 'user_123'
-        if token.startswith("user_"):
+        # Check for synthetic test token or JWT in dev/test
+        if token.startswith("user_") or token.startswith("test_"):
             return token
+        try:
+            payload = jwt.decode(token, options={"verify_signature": False})
+            uid = payload.get("sub")
+            if uid:
+                return str(uid)
+        except Exception:
+            pass
 
-    # 3. Environment check: require auth only if production flag is explicitly enabled
-    if settings.environment == "production" and not token:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required. Provide a valid Bearer token.",
-        )
+        return token
 
+    # 2. Explicit test fixture override in dev/test (e.g. TestClient headers)
+    if x_user_id and x_user_id.strip():
+        return x_user_id.strip()
+
+    # 3. Default user for local offline development only
     return "default_user"

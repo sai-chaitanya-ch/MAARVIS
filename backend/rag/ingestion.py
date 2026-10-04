@@ -1,10 +1,13 @@
+"""
+Document Ingestion Pipeline for MAARVIS.
+Parses documents, generates chunks and 768-dim embeddings,
+and indexes into Supabase pgvector scoped to user_id.
+"""
 from __future__ import annotations
 
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List
-
-from qdrant_client.http.models import PointStruct
 
 from rag.chunking import chunk_pages
 from rag.embeddings import embed_texts
@@ -42,20 +45,8 @@ async def ingest_file(
             "status": "empty",
         }
     vectors = await embed_texts([c["text"] for c in chunks])
-    dim = len(vectors[0])
-    points = []
-    for chunk, vector in zip(chunks, vectors):
-        chunk_payload = dict(chunk)
-        chunk_payload["user_id"] = user_id
-        points.append(
-            PointStruct(
-                id=str(uuid.uuid5(uuid.NAMESPACE_URL, chunk["chunk_id"])),
-                vector=vector,
-                payload=chunk_payload,
-            )
-        )
     store = get_vector_store()
-    store.upsert(points, dim=dim)
+    store.upsert_chunks(chunks, vectors, document_id=document_id, user_id=user_id)
     return {
         "document_id": document_id,
         "filename": filename,

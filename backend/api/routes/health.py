@@ -2,7 +2,6 @@ from fastapi import APIRouter
 
 from config.settings import get_settings
 from rag.vector_store import VectorStoreError, get_vector_store
-from services.s3_service import get_s3_service
 from services.provider_service import (
     get_gemini_credentials,
     get_jev_credentials,
@@ -20,18 +19,17 @@ router = APIRouter()
 @router.get("")
 async def health():
     settings = get_settings()
-    qdrant = {"ok": False}
+    rag_status = {"ok": False, "type": "pgvector"}
     try:
         get_vector_store().ping()
-        qdrant = {"ok": True}
-    except VectorStoreError as exc:
-        qdrant = {"ok": False, "error": str(exc)}
+        rag_status = {"ok": True, "type": "pgvector"}
+    except Exception as exc:
+        rag_status = {"ok": False, "type": "pgvector", "error": str(exc)}
 
     gemini = get_gemini_credentials()
     jev = get_jev_credentials()
     web = get_web_search_credentials()
 
-    # Determine active AI Provider
     try:
         active_prov = get_active_provider()
         active_llm = {
@@ -59,7 +57,6 @@ async def health():
         "llm": active_llm,
         "jev_configured": bool(jev),
         "tavily_configured": bool(web),
-        "qdrant": qdrant,
-        "aws_enabled": settings.aws_enabled,
+        "vector_store": rag_status,
         "capabilities": get_system_capabilities(),
     }

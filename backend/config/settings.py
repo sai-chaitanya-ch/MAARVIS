@@ -16,19 +16,17 @@ class Settings(BaseSettings):
         protected_namespaces=(),
     )
 
-    # ── Google Gemini (Minimum Required AI Provider) ──────────────────────────
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
-
     # ── AI Providers Configuration & Encryption ──────────────────────────────
     provider_encryption_key: str = ""
     default_ai_provider: str = "google"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     groq_api_key: str = ""
     deepseek_api_key: str = ""
 
-    # ── Web search ───────────────────────────────────────────────────────────
+    # ── Optional Web search (Tavily) ─────────────────────────────────────────
     tavily_api_key: str = ""
     tavily_base_url: str = "https://api.tavily.com"
 
@@ -41,18 +39,6 @@ class Settings(BaseSettings):
     rag_chunk_overlap: int = 150
     rag_top_k: int = 10
     rag_final_k: int = 5
-    qdrant_collection: str = "maarvis_documents"  # Change default from verify_ai_chunks
-
-    # ── Vector store ─────────────────────────────────────────────────────────
-    qdrant_url: str = "http://localhost:6333"
-    qdrant_api_key: str = ""
-
-    # ── AWS / S3 (optional) ──────────────────────────────────────────────────
-    aws_enabled: bool = False
-    aws_region: str = "ap-south-1"
-    aws_access_key_id: str = ""
-    aws_secret_access_key: str = ""
-    s3_bucket: str = ""
 
     # ── Application limits ───────────────────────────────────────────────────
     max_verification_iterations: int = 3
@@ -70,7 +56,7 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60
     log_level: str = "INFO"
 
-    # ── JEV AI semantic decision engine ─────────────────────────────────────
+    # ── Optional JEV AI semantic decision engine ─────────────────────────────
     jev_api_key: str = ""
     jev_base_url: str = "https://api.typesafe.ai/v1/systemone"
     jev_model: str = "jev-latest"
@@ -84,7 +70,13 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> List[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        if self.environment.lower() == "development":
+            dev_origins = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"]
+            for d in dev_origins:
+                if d not in origins:
+                    origins.append(d)
+        return origins
 
     @property
     def sqlite_path(self) -> str:
