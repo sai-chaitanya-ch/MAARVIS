@@ -14,6 +14,20 @@ def new_id(prefix: str = "") -> str:
     return f"{prefix}{value}" if prefix else value
 
 
+def new_uuid() -> str:
+    return str(uuid.uuid4())
+
+
+def is_valid_uuid(val: Optional[str]) -> bool:
+    if not val or not isinstance(val, str):
+        return False
+    try:
+        uuid_obj = uuid.UUID(val)
+        return str(uuid_obj) == val.lower()
+    except (ValueError, AttributeError):
+        return False
+
+
 class Timer:
     def __init__(self) -> None:
         self.start = time.perf_counter()

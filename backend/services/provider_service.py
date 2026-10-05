@@ -24,6 +24,10 @@ from security.crypto import (
     decrypt_provider_key,
     mask_provider_key,
 )
+try:
+    from providers.gemini import normalize_gemini_model
+except ImportError:
+    from backend.providers.gemini import normalize_gemini_model
 from utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -119,6 +123,9 @@ def create_provider(
         norm_provider = "google"
     elif norm_provider == "web_search":
         norm_provider = "tavily"
+
+    if norm_provider == "google":
+        model = normalize_gemini_model(model)
 
     # 1. Supabase PostgreSQL persistence (Primary source of truth)
     supabase_saved = False
@@ -724,11 +731,15 @@ def get_active_stored_provider(user_id: Optional[str] = None) -> Optional[Dict[s
                         try:
                             raw_key = decrypt_provider_key(row["encrypted_key"])
                             if raw_key and raw_key.strip():
+                                prov = row["provider"]
+                                raw_model = row.get("model") or ""
+                                if prov.lower() in ("google", "gemini"):
+                                    raw_model = normalize_gemini_model(raw_model)
                                 return {
                                     "id": row["id"],
-                                    "provider": row["provider"],
+                                    "provider": prov,
                                     "api_key": raw_key.strip(),
-                                    "model": row.get("model") or "",
+                                    "model": raw_model,
                                     "label": row.get("label") or "",
                                     "status": row.get("status") or "connected",
                                     "key_masked": row.get("key_masked") or "",
@@ -791,11 +802,15 @@ def get_active_stored_provider(user_id: Optional[str] = None) -> Optional[Dict[s
             try:
                 raw_key = decrypt_provider_key(row["encrypted_key"])
                 if raw_key and raw_key.strip():
+                    prov = row["provider"]
+                    raw_model = row["model"] or ""
+                    if prov.lower() in ("google", "gemini"):
+                        raw_model = normalize_gemini_model(raw_model)
                     return {
                         "id": row["id"],
-                        "provider": row["provider"],
+                        "provider": prov,
                         "api_key": raw_key.strip(),
-                        "model": row["model"],
+                        "model": raw_model,
                         "label": row["label"],
                         "status": row["status"],
                         "key_masked": row["key_masked"],
@@ -835,7 +850,7 @@ def get_gemini_credentials(user_id: Optional[str] = None) -> Optional[Dict[str, 
                                 "id": row["id"],
                                 "provider": "google",
                                 "api_key": raw_key.strip(),
-                                "model": row.get("model") or "gemini-2.0-flash",
+                                "model": normalize_gemini_model(row.get("model")),
                                 "label": row.get("label") or "Google Gemini",
                                 "status": row.get("status") or "connected",
                                 "key_masked": row.get("key_masked") or "",
@@ -859,7 +874,7 @@ def get_gemini_credentials(user_id: Optional[str] = None) -> Optional[Dict[str, 
                             "id": row["id"],
                             "provider": "google",
                             "api_key": raw_key.strip(),
-                            "model": row["model"] or "gemini-2.0-flash",
+                            "model": normalize_gemini_model(row["model"]),
                             "label": row["label"] or "Google Gemini",
                             "status": row["status"],
                             "key_masked": row["key_masked"],
@@ -874,7 +889,7 @@ def get_gemini_credentials(user_id: Optional[str] = None) -> Optional[Dict[str, 
             "id": "env_gemini",
             "provider": "google",
             "api_key": raw_key,
-            "model": settings.gemini_model or "gemini-2.0-flash",
+            "model": normalize_gemini_model(settings.gemini_model),
             "label": "Google Gemini (.env)",
             "status": "connected",
             "key_masked": mask_provider_key(raw_key),

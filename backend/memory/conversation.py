@@ -15,8 +15,21 @@ import aiosqlite
 
 from config.settings import get_settings
 from services.supabase_service import get_supabase_service
-from utils.tracing import new_id
+from utils.tracing import is_valid_uuid, new_id, new_uuid
 from utils.logging import get_logger
+
+
+def _resolve_effective_user(user_id: Optional[str] = None) -> str:
+    from security.auth import get_context_user_id
+    ctx_user = get_context_user_id()
+    resolved = user_id or ctx_user
+    if resolved == "default_user" and ctx_user and ctx_user != "default_user":
+        resolved = ctx_user
+    settings = get_settings()
+    if settings.is_production:
+        if not resolved or resolved == "default_user":
+            raise ValueError("AUTHENTICATED_USER_REQUIRED: An authenticated user_id is required in production")
+    return resolved or "default_user"
 
 log = get_logger(__name__)
 
@@ -204,17 +217,26 @@ def generate_conversation_title(message: str) -> str:
     return title.title()
 
 
-async def create_conversation(title: str, user_id: str = "default_user") -> str:
+async def create_conversation(
+    title: str,
+    user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+) -> str:
+    effective_user = _resolve_effective_user(user_id)
+    cid = conversation_id if (conversation_id and is_valid_uuid(conversation_id)) else new_uuid()
     if get_supabase_service().is_configured:
-        return await get_supabase_service().create_conversation(title, user_id=user_id)
+        return await get_supabase_service().create_conversation(title, user_id=effective_user, conversation_id=cid)
+
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Supabase credentials not configured in production")
 
     db = await get_db()
-    cid = new_id("c_")
     now = datetime.now(timezone.utc).isoformat()
     clean_title = title[:80] if title else "New Conversation"
     await db.execute(
         "INSERT INTO conversations (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (cid, user_id, clean_title, now, now),
+        (cid, effective_user, clean_title, now, now),
     )
     await db.commit()
     return cid
@@ -225,9 +247,14 @@ async def touch_conversation(
     title: Optional[str] = None,
     user_id: Optional[str] = None,
 ) -> None:
+    settings = get_settings()
+    effective_user = _resolve_effective_user(user_id) if (settings.is_production or user_id) else None
     if get_supabase_service().is_configured:
-        await get_supabase_service().touch_conversation(conversation_id, user_id=user_id, title=title)
+        await get_supabase_service().touch_conversation(conversation_id, user_id=effective_user, title=title)
         return
+
+    if settings.is_production:
+        raise RuntimeError("Supabase credentials not configured in production")
 
     db = await get_db()
     now = datetime.now(timezone.utc).isoformat()
@@ -246,7 +273,8 @@ async def add_message(
     role: str,
     content: str,
     *,
-    user_id: str = "default_user",
+    user_id: Optional[str] = None,
+    message_id: Optional[str] = None,
     provider: Optional[str] = None,
     model: Optional[str] = None,
     execution_id: Optional[str] = None,
@@ -257,12 +285,15 @@ async def add_message(
     events: Optional[List[Dict[str, Any]]] = None,
     claims: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
+    effective_user = _resolve_effective_user(user_id)
+    mid = message_id if (message_id and is_valid_uuid(message_id)) else new_uuid()
     if get_supabase_service().is_configured:
         return await get_supabase_service().add_message(
             conversation_id,
             role,
             content,
-            user_id=user_id,
+            user_id=effective_user,
+            message_id=mid,
             provider=provider,
             model=model,
             execution_id=execution_id,
@@ -274,8 +305,11 @@ async def add_message(
             claims=claims,
         )
 
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Supabase credentials not configured in production")
+
     db = await get_db()
-    mid = new_id("m_")
     now = datetime.now(timezone.utc).isoformat()
 
     await db.execute(
@@ -286,7 +320,7 @@ async def add_message(
         (
             mid,
             conversation_id,
-            user_id,
+            effective_user,
             role,
             content,
             provider,
@@ -302,13 +336,18 @@ async def add_message(
         ),
     )
     await db.commit()
-    await touch_conversation(conversation_id, user_id=user_id)
+    await touch_conversation(conversation_id, user_id=effective_user)
     return mid
 
 
-async def list_conversations(user_id: str = "default_user") -> List[Dict[str, Any]]:
+async def list_conversations(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    effective_user = _resolve_effective_user(user_id)
     if get_supabase_service().is_configured:
-        return await get_supabase_service().list_conversations(user_id=user_id)
+        return await get_supabase_service().list_conversations(user_id=effective_user)
+
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Supabase credentials not configured in production")
 
     db = await get_db()
     rows = await db.execute(
@@ -317,22 +356,27 @@ async def list_conversations(user_id: str = "default_user") -> List[Dict[str, An
            FROM conversations c
            WHERE c.user_id = ?
            ORDER BY c.updated_at DESC LIMIT 100""",
-        (user_id,),
+        (effective_user,),
     )
     return [dict(r) for r in await rows.fetchall()]
 
 
 async def get_conversation(
     conversation_id: str,
-    user_id: str = "default_user",
+    user_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
+    effective_user = _resolve_effective_user(user_id)
     if get_supabase_service().is_configured:
-        return await get_supabase_service().get_conversation(conversation_id, user_id=user_id)
+        return await get_supabase_service().get_conversation(conversation_id, user_id=effective_user)
+
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Supabase credentials not configured in production")
 
     db = await get_db()
     conv = await db.execute(
         "SELECT * FROM conversations WHERE id=? AND user_id=?",
-        (conversation_id, user_id),
+        (conversation_id, effective_user),
     )
     row = await conv.fetchone()
     if not row:
@@ -340,7 +384,7 @@ async def get_conversation(
 
     msgs = await db.execute(
         "SELECT * FROM messages WHERE conversation_id=? AND user_id=? ORDER BY created_at ASC",
-        (conversation_id, user_id),
+        (conversation_id, effective_user),
     )
     messages = []
     for m in await msgs.fetchall():
@@ -368,14 +412,19 @@ async def get_conversation(
     return data
 
 
-async def delete_conversation(conversation_id: str, user_id: str = "default_user") -> bool:
+async def delete_conversation(conversation_id: str, user_id: Optional[str] = None) -> bool:
+    effective_user = _resolve_effective_user(user_id)
     if get_supabase_service().is_configured:
-        return await get_supabase_service().delete_conversation(conversation_id, user_id=user_id)
+        return await get_supabase_service().delete_conversation(conversation_id, user_id=effective_user)
+
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Supabase credentials not configured in production")
 
     db = await get_db()
     res = await db.execute(
         "DELETE FROM conversations WHERE id=? AND user_id=?",
-        (conversation_id, user_id),
+        (conversation_id, effective_user),
     )
     await db.commit()
     return res.rowcount > 0
@@ -383,16 +432,21 @@ async def delete_conversation(conversation_id: str, user_id: str = "default_user
 
 async def recent_messages(
     conversation_id: str,
-    user_id: str = "default_user",
+    user_id: Optional[str] = None,
     limit: int = 12,
 ) -> List[Dict[str, str]]:
+    effective_user = _resolve_effective_user(user_id)
     if get_supabase_service().is_configured:
-        return await get_supabase_service().recent_messages(conversation_id, user_id=user_id, limit=limit)
+        return await get_supabase_service().recent_messages(conversation_id, user_id=effective_user, limit=limit)
+
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Supabase credentials not configured in production")
 
     db = await get_db()
     rows = await db.execute(
         "SELECT role, content FROM messages WHERE conversation_id=? AND user_id=? ORDER BY created_at DESC LIMIT ?",
-        (conversation_id, user_id, limit),
+        (conversation_id, effective_user, limit),
     )
     items = [dict(r) for r in await rows.fetchall()]
     items.reverse()
@@ -404,37 +458,46 @@ async def save_document(
     name: str,
     storage_path: str,
     chunks: int,
-    user_id: str = "default_user",
+    user_id: Optional[str] = None,
     mime_type: str = "application/octet-stream",
     size_bytes: int = 0,
 ) -> None:
+    effective_user = _resolve_effective_user(user_id)
     if get_supabase_service().is_configured:
         await get_supabase_service().save_document(
             document_id=document_id,
             name=name,
             storage_path=storage_path,
             chunks=chunks,
-            user_id=user_id,
+            user_id=effective_user,
             mime_type=mime_type,
             size_bytes=size_bytes,
         )
         return
 
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Supabase credentials not configured in production")
+
     db = await get_db()
     now = datetime.now(timezone.utc).isoformat()
-    # Explicitly supply both name and filename to satisfy legacy SQLite schemas
     await db.execute(
         """INSERT OR REPLACE INTO documents
            (id, user_id, name, filename, mime_type, storage_path, size_bytes, chunks, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (document_id, user_id, name, name, mime_type, storage_path, size_bytes, chunks, now),
+        (document_id, effective_user, name, name, mime_type, storage_path, size_bytes, chunks, now),
     )
     await db.commit()
 
 
-async def list_documents(user_id: str = "default_user") -> List[Dict[str, Any]]:
+async def list_documents(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    effective_user = _resolve_effective_user(user_id)
     if get_supabase_service().is_configured:
-        return await get_supabase_service().list_documents(user_id=user_id)
+        return await get_supabase_service().list_documents(user_id=effective_user)
+
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Supabase credentials not configured in production")
 
     db = await get_db()
     rows = await (
@@ -443,7 +506,7 @@ async def list_documents(user_id: str = "default_user") -> List[Dict[str, Any]]:
                FROM documents
                WHERE user_id = ?
                ORDER BY created_at DESC""",
-            (user_id,),
+            (effective_user,),
         )
     ).fetchall()
     docs = []
@@ -454,15 +517,20 @@ async def list_documents(user_id: str = "default_user") -> List[Dict[str, Any]]:
     return docs
 
 
-async def delete_document(document_id: str, user_id: str = "default_user") -> bool:
+async def delete_document(document_id: str, user_id: Optional[str] = None) -> bool:
+    effective_user = _resolve_effective_user(user_id)
     if get_supabase_service().is_configured:
-        return await get_supabase_service().delete_document(document_id, user_id=user_id)
+        return await get_supabase_service().delete_document(document_id, user_id=effective_user)
+
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Supabase credentials not configured in production")
 
     db = await get_db()
     row = await (
         await db.execute(
             "SELECT storage_path FROM documents WHERE id=? AND user_id=?",
-            (document_id, user_id),
+            (document_id, effective_user),
         )
     ).fetchone()
     if not row:
@@ -473,8 +541,8 @@ async def delete_document(document_id: str, user_id: str = "default_user") -> bo
             await get_storage_service().delete_document(row["storage_path"])
         except Exception:
             pass
-    await db.execute("DELETE FROM documents WHERE id=? AND user_id=?", (document_id, user_id))
-    await db.execute("DELETE FROM document_chunks WHERE document_id=? AND user_id=?", (document_id, user_id))
+    await db.execute("DELETE FROM documents WHERE id=? AND user_id=?", (document_id, effective_user))
+    await db.execute("DELETE FROM document_chunks WHERE document_id=? AND user_id=?", (document_id, effective_user))
     await db.commit()
     return True
 

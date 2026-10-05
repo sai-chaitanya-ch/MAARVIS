@@ -21,8 +21,9 @@ from memory.conversation import (
 from schemas.chat import ChatRequest, ChatResponse, VerificationSummary
 from security.auth import get_current_user_id, set_context_user_id
 from security.validation import sanitize_user_text
+from config.settings import get_settings
 from utils.events import EventBus
-from utils.tracing import new_id
+from utils.tracing import is_valid_uuid, new_id
 
 router = APIRouter()
 
@@ -32,6 +33,12 @@ async def execute_chat(
     user_id: str = "default_user",
     bus: EventBus | None = None,
 ) -> Dict[str, Any]:
+    settings = get_settings()
+    if settings.is_production and (not user_id or user_id == "default_user"):
+        raise HTTPException(
+            status_code=401,
+            detail="AUTHENTICATED_USER_REQUIRED: An authenticated user is required in production",
+        )
     if user_id:
         set_context_user_id(user_id)
     message = sanitize_user_text(body.message)
@@ -40,14 +47,14 @@ async def execute_chat(
 
     execution_id = new_id("exec_")
 
-    if body.conversation_id:
-        conversation_id = body.conversation_id
+    conversation_id = body.conversation_id
+    if conversation_id and is_valid_uuid(conversation_id):
         await touch_conversation(conversation_id, user_id=user_id)
     else:
         title = generate_conversation_title(message)
         conversation_id = await create_conversation(title, user_id=user_id)
 
-    history = await recent_messages(conversation_id)
+    history = await recent_messages(conversation_id, user_id=user_id)
     await add_message(conversation_id, "user", message, user_id=user_id, execution_id=execution_id)
 
     # ── MARVIS triage ────────────────────────────────────────────────────────

@@ -8,7 +8,12 @@ from typing import Any, Dict, List, Optional, Type
 
 from config.settings import get_settings
 from .base import AIProvider, AIProviderError, NoProviderConfiguredError, ProviderDecryptionError
-from .gemini import GeminiProvider
+from .gemini import (
+    GeminiProvider,
+    DEFAULT_GEMINI_MODEL,
+    SUPPORTED_GEMINI_MODELS,
+    normalize_gemini_model,
+)
 from .openai_provider import OpenAIProvider
 from .anthropic import AnthropicProvider
 from .groq import GroqProvider
@@ -32,8 +37,8 @@ SUPPORTED_PROVIDER_METADATA = [
         "id": "google",
         "name": "Google Gemini",
         "category": "core",
-        "default_model": "gemini-2.0-flash",
-        "models": ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
+        "default_model": DEFAULT_GEMINI_MODEL,
+        "models": list(SUPPORTED_GEMINI_MODELS),
         "description": "Google's state-of-the-art multimodal reasoning models.",
     },
     {
@@ -79,6 +84,8 @@ def resolve_provider(provider_id: str, api_key: str, model: Optional[str] = None
         raise ValueError(
             f"Unsupported provider: '{provider_id}'. Supported: {', '.join(PROVIDER_REGISTRY.keys())}"
         )
+    if normalized_id in ("google", "gemini"):
+        model = normalize_gemini_model(model)
     return provider_cls(api_key=api_key, model=model)
 
 
@@ -148,7 +155,7 @@ def get_active_provider(user_id: Optional[str] = None) -> AIProvider:
 
     # 2. Check environment variables
     env_candidates = [
-        ("google", settings.gemini_api_key, settings.gemini_model),
+        ("google", settings.gemini_api_key, normalize_gemini_model(settings.gemini_model)),
         ("openai", settings.openai_api_key, None),
         ("anthropic", settings.anthropic_api_key, None),
         ("groq", settings.groq_api_key, None),

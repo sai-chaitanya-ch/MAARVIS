@@ -263,11 +263,11 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
       : capabilities?.ai_provider?.label || "Google Gemini");
 
   const activeAiModel =
-    activeAiCred?.model || capabilities?.ai_provider?.model || "gemini-2.0-flash";
+    activeAiCred?.model || capabilities?.ai_provider?.model || "gemini-2.5-flash";
 
   const geminiCred = providers.find((p) => p.provider === "google" || p.provider === "gemini");
   const geminiConnected = Boolean(geminiCred && geminiCred.status === "connected") || Boolean(capabilities?.gemini?.connected);
-  const geminiModel = geminiCred?.model || capabilities?.gemini?.model || "gemini-2.0-flash";
+  const geminiModel = geminiCred?.model || capabilities?.gemini?.model || "gemini-2.5-flash";
   const geminiMasked = geminiCred?.key_masked || capabilities?.gemini?.key_masked || null;
 
   const jevCred = providers.find((p) => p.provider === "jev");
@@ -480,7 +480,7 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
                       id: "google",
                       altId: "gemini",
                       name: "Google Gemini",
-                      defaultModel: "gemini-2.0-flash",
+                      defaultModel: "gemini-2.5-flash",
                       description: "Multimodal frontier models with ultra-fast inference and deep context.",
                       icon: <Sparkles size={14} className="text-blue-600" />,
                       iconBg: "bg-blue-50 border-blue-100",
@@ -818,7 +818,7 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
                       ) : (
                         <input
                           type="text"
-                          placeholder="e.g. gemini-2.0-flash, gpt-4o"
+                          placeholder="e.g. gemini-2.5-flash, gpt-4o"
                           value={form.model}
                           onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
                           className="w-full rounded-lg border border-[#E5E7EB] bg-white px-2.5 py-1.5 text-xs focus:border-neutral-500 focus:outline-none font-mono"

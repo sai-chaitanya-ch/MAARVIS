@@ -142,7 +142,14 @@ async def node_research(state: ConversationState) -> Dict[str, Any]:
 async def node_rag(state: ConversationState) -> Dict[str, Any]:
     bus = bus_from(state)
     doc_ids = state.get("document_ids") or []
-    user_id = state.get("user_id") or "default_user"
+    settings = get_settings()
+    user_id = state.get("user_id")
+    if not user_id:
+        from security.auth import get_context_user_id
+        user_id = get_context_user_id()
+    if settings.is_production and (not user_id or user_id == "default_user"):
+        raise ValueError("AUTHENTICATED_USER_REQUIRED: An authenticated user_id is required in production")
+    user_id = user_id or "default_user"
     if not doc_ids:
         return {
             "draft_answer": "No documents were attached to this query.",

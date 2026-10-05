@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     provider_encryption_key: str = ""
     default_ai_provider: str = "google"
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-2.5-flash"
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     groq_api_key: str = ""
@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
     supabase_storage_bucket: str = "documents"
     port: int = 8000
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.lower() == "production"
 
     @property
     def cors_origin_list(self) -> List[str]:

@@ -19,6 +19,10 @@ async def run_rag(
     document_ids: List[str],
     user_id: str = "default_user",
 ) -> Dict[str, Any]:
+    from config.settings import get_settings
+    settings = get_settings()
+    if settings.is_production and (not user_id or user_id == "default_user"):
+        raise ValueError("AUTHENTICATED_USER_REQUIRED: An authenticated user_id is required in production")
     if not document_ids:
         return {
             "draft_answer": "No documents were attached to this query.",
