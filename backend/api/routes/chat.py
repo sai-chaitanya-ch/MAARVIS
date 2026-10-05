@@ -19,7 +19,7 @@ from memory.conversation import (
     save_sources,
 )
 from schemas.chat import ChatRequest, ChatResponse, VerificationSummary
-from security.auth import get_current_user_id
+from security.auth import get_current_user_id, set_context_user_id
 from security.validation import sanitize_user_text
 from utils.events import EventBus
 from utils.tracing import new_id
@@ -32,6 +32,8 @@ async def execute_chat(
     user_id: str = "default_user",
     bus: EventBus | None = None,
 ) -> Dict[str, Any]:
+    if user_id:
+        set_context_user_id(user_id)
     message = sanitize_user_text(body.message)
     if not message:
         raise HTTPException(status_code=400, detail="Message is empty")
@@ -349,6 +351,8 @@ async def chat_stream(
 
     async def run() -> None:
         try:
+            if user_id:
+                set_context_user_id(user_id)
             result = await execute_chat(body, user_id=user_id, bus=bus)
             await queue.put({"type": "complete", **result})
         except Exception as exc:

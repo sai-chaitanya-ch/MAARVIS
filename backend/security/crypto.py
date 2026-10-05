@@ -21,11 +21,20 @@ def derive_encryption_key(secret: Optional[str] = None) -> bytes:
     """Derive a 256-bit (32-byte) key for AES-256-GCM from server secret."""
     if not secret:
         settings = get_settings()
-        secret = (
-            settings.provider_encryption_key
-            or settings.verify_api_key
-            or "maarvis-production-provider-master-secret-2026"
-        )
+        if settings.environment.lower() == "production":
+            key_val = settings.provider_encryption_key or settings.verify_api_key
+            if not key_val or not key_val.strip():
+                raise ValueError(
+                    "CRITICAL_CONFIGURATION_ERROR: PROVIDER_ENCRYPTION_KEY is required in production environment. "
+                    "Configure PROVIDER_ENCRYPTION_KEY in Render environment settings to enable secure AES-256-GCM encryption."
+                )
+            secret = key_val.strip()
+        else:
+            secret = (
+                settings.provider_encryption_key
+                or settings.verify_api_key
+                or "maarvis-production-provider-master-secret-2026"
+            )
     seed = f"{secret}:maarvis-aes256-gcm-v1"
     return hashlib.sha256(seed.encode("utf-8")).digest()
 

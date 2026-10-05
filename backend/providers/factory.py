@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Type
 
 from config.settings import get_settings
-from .base import AIProvider, NoProviderConfiguredError
+from .base import AIProvider, AIProviderError, NoProviderConfiguredError, ProviderDecryptionError
 from .gemini import GeminiProvider
 from .openai_provider import OpenAIProvider
 from .anthropic import AnthropicProvider
@@ -95,10 +95,28 @@ def get_active_provider(user_id: Optional[str] = None) -> AIProvider:
        - DEEPSEEK_API_KEY
     3. Raises NoProviderConfiguredError if no provider has credentials.
     """
+    settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    try:
+        from security.auth import get_context_user_id
+    except ImportError:
+        from backend.security.auth import get_context_user_id
+
+    effective_user_id = user_id or get_context_user_id()
+
+    if is_prod and (not effective_user_id or effective_user_id == "default_user"):
+        log.warning("get_active_provider_missing_user_in_production")
+        raise AIProviderError("AUTHENTICATED_USER_REQUIRED: Authenticated user context is required to resolve AI provider in production.")
+
     # 1. Check database credentials
     try:
-        from services.provider_service import get_active_stored_provider
-        stored = get_active_stored_provider(user_id=user_id)
+        try:
+            from services.provider_service import get_active_stored_provider
+        except ImportError:
+            from backend.services.provider_service import get_active_stored_provider
+
+        stored = get_active_stored_provider(user_id=effective_user_id)
         if stored and stored.get("api_key"):
             prov_name = stored["provider"].lower()
             if prov_name in PROVIDER_REGISTRY:
@@ -107,12 +125,28 @@ def get_active_provider(user_id: Optional[str] = None) -> AIProvider:
                     api_key=stored["api_key"],
                     model=stored.get("model"),
                 )
+    except ValueError as exc:
+        if "AUTHENTICATED_USER_REQUIRED" in str(exc):
+            log.error("active_provider_missing_user_context", error=str(exc))
+            raise AIProviderError(str(exc)) from exc
+        if "PROVIDER_CREDENTIAL_DECRYPTION_FAILED" in str(exc):
+            log.error("active_provider_decryption_failed", error=str(exc), user_id=effective_user_id)
+            raise ProviderDecryptionError(
+                f"Failed to decrypt stored provider credentials: {exc}. Please verify PROVIDER_ENCRYPTION_KEY or re-enter your API key in Settings → API & Providers."
+            ) from exc
+        raise
+    except RuntimeError as exc:
+        if is_prod:
+            log.error("active_provider_db_query_failed", error=str(exc), user_id=effective_user_id)
+            raise AIProviderError(f"Database error resolving AI provider: {exc}") from exc
+        log.warning("error_checking_stored_provider", error=str(exc))
     except Exception as exc:
+        if is_prod:
+            log.error("active_provider_resolution_failed", error=str(exc), user_id=effective_user_id)
+            raise AIProviderError(f"Failed to resolve active provider: {exc}") from exc
         log.warning("error_checking_stored_provider", error=str(exc))
 
     # 2. Check environment variables
-    settings = get_settings()
-
     env_candidates = [
         ("google", settings.gemini_api_key, settings.gemini_model),
         ("openai", settings.openai_api_key, None),

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from config.settings import get_settings
+from security.auth import get_context_user_id
 from security.crypto import (
     derive_encryption_key,
     encrypt_provider_key,
@@ -96,11 +97,19 @@ def create_provider(
     api_key: str,
     model: str = "",
     label: str = "",
-    user_id: str = "default_user",
+    user_id: Optional[str] = None,
     is_active: bool = True,
 ) -> Dict[str, Any]:
     """Store a new provider credential using AES-256-GCM. Returns safe record (never raw key)."""
-    ensure_provider_table()
+    settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    if is_prod and (not effective_user or effective_user == "default_user"):
+        raise ValueError("Valid authenticated user_id required in production")
+
+    target_user = effective_user or "default_user"
     cred_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     encrypted = encrypt_provider_key(api_key.strip())
@@ -111,42 +120,92 @@ def create_provider(
     elif norm_provider == "web_search":
         norm_provider = "tavily"
 
-    # 1. Supabase PostgreSQL persistence if configured
+    # 1. Supabase PostgreSQL persistence (Primary source of truth)
+    supabase_saved = False
     if _is_supabase_ready():
+        url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials"
+        # Deactivate previous core AI providers for this user if activating a new core provider
+        if is_active and norm_provider not in ("jev", "tavily", "web_search"):
+            deact_url = f"{url}?user_id=eq.{target_user}&provider=not.in.(jev,tavily,web_search)"
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    deact_resp = client.patch(
+                        deact_url,
+                        headers=_supabase_headers(),
+                        json={"is_active": 0, "updated_at": now},
+                    )
+                    if deact_resp.status_code not in (200, 204):
+                        log.warning(
+                            "supabase_deactivate_previous_notice",
+                            status=deact_resp.status_code,
+                            detail=deact_resp.text[:200],
+                        )
+            except Exception as exc:
+                log.warning("supabase_deactivate_request_failed", error=str(exc))
+                if is_prod:
+                    raise RuntimeError(f"Database error deactivating previous provider in Supabase: {exc}") from exc
+
+        payload = {
+            "id": cred_id,
+            "user_id": target_user,
+            "provider": norm_provider,
+            "label": label or provider,
+            "model": model,
+            "encrypted_key": encrypted,
+            "key_masked": masked,
+            "status": "unchecked",
+            "is_active": 1 if is_active else 0,
+            "created_at": now,
+            "updated_at": now,
+        }
         try:
-            settings = get_settings()
-            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials"
-            if is_active and norm_provider not in ("jev", "tavily", "web_search"):
-                deact_url = f"{url}?user_id=eq.{user_id}&provider=not.in.(jev,tavily,web_search)"
-                with httpx.Client(timeout=8.0) as client:
-                    client.patch(deact_url, headers=_supabase_headers(), json={"is_active": 0, "updated_at": now})
-
-            payload = {
-                "id": cred_id,
-                "user_id": user_id,
-                "provider": norm_provider,
-                "label": label or provider,
-                "model": model,
-                "encrypted_key": encrypted,
-                "key_masked": masked,
-                "status": "unchecked",
-                "is_active": 1 if is_active else 0,
-                "created_at": now,
-                "updated_at": now,
-            }
-            with httpx.Client(timeout=8.0) as client:
+            with httpx.Client(timeout=10.0) as client:
                 resp = client.post(url, headers=_supabase_headers(), json=payload)
-                if resp.status_code in {200, 201}:
-                    log.info("provider_credential_saved_supabase", provider=norm_provider, user_id=user_id)
-        except Exception as exc:
-            log.warning("supabase_provider_save_notice", error=str(exc))
+                if resp.status_code in (200, 201):
+                    supabase_saved = True
+                    log.info("provider_credential_saved_supabase", provider=norm_provider, user_id=target_user)
+                else:
+                    log.error(
+                        "supabase_provider_save_failed",
+                        status=resp.status_code,
+                        body=resp.text[:300],
+                        user_id=target_user,
+                        provider=norm_provider,
+                    )
+                    if is_prod:
+                        raise RuntimeError(
+                            f"DATABASE_PERSISTENCE_FAILURE: Supabase provider persistence failed (HTTP {resp.status_code}): {resp.text[:200]}"
+                        )
+        except httpx.HTTPError as exc:
+            log.error("supabase_provider_save_network_error", error=str(exc), user_id=target_user)
+            if is_prod:
+                raise RuntimeError(f"Database communication error with Supabase: {exc}") from exc
+    elif is_prod:
+        raise RuntimeError("Supabase PostgreSQL persistence is required in production but Supabase is not configured.")
 
-    # 2. Local database persistence (fallback and sync)
+    if is_prod:
+        if not supabase_saved:
+            raise RuntimeError("Failed to persist provider credential in Supabase.")
+        return {
+            "id": cred_id,
+            "user_id": target_user,
+            "provider": norm_provider,
+            "label": label or provider,
+            "model": model,
+            "key_masked": masked,
+            "status": "unchecked",
+            "is_active": bool(is_active),
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    # 2. Local database persistence (Development / offline test fallback only)
+    ensure_provider_table()
     with _get_conn() as conn:
         if is_active and norm_provider not in ("jev", "tavily", "web_search"):
             conn.execute(
                 "UPDATE user_provider_credentials SET is_active = 0 WHERE user_id = ? AND provider NOT IN ('jev', 'tavily', 'web_search')",
-                (user_id,),
+                (target_user,),
             )
         conn.execute(
             """
@@ -156,7 +215,7 @@ def create_provider(
             """,
             (
                 cred_id,
-                user_id,
+                target_user,
                 norm_provider,
                 label or provider,
                 model,
@@ -170,19 +229,26 @@ def create_provider(
         )
         conn.commit()
 
-    log.info("provider_credential_created", provider=norm_provider, id=cred_id, user_id=user_id)
-    return get_provider(cred_id, user_id=user_id) or {}
+    log.info("provider_credential_created", provider=norm_provider, id=cred_id, user_id=target_user)
+    return get_provider(cred_id, user_id=target_user) or {}
 
 
-def list_providers(user_id: str = "default_user") -> List[Dict[str, Any]]:
+def list_providers(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """List all configured providers for user. Scoped strictly to user_id. Never returns raw keys."""
-    ensure_provider_table()
+    settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    if is_prod and (not effective_user or effective_user == "default_user"):
+        raise ValueError("Valid authenticated user_id required in production")
+
+    target_user = effective_user or "default_user"
 
     # 1. Supabase PostgreSQL
     if _is_supabase_ready():
+        url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?user_id=eq.{target_user}&order=is_active.desc,updated_at.desc"
         try:
-            settings = get_settings()
-            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?user_id=eq.{user_id}&order=is_active.desc,updated_at.desc"
             with httpx.Client(timeout=8.0) as client:
                 resp = client.get(url, headers=_supabase_headers())
                 if resp.status_code == 200:
@@ -194,201 +260,281 @@ def list_providers(user_id: str = "default_user") -> List[Dict[str, Any]]:
                         item["is_active"] = bool(item.get("is_active"))
                         safe.append(item)
                     return safe
-        except Exception as exc:
-            log.warning("supabase_list_providers_notice", error=str(exc))
+                else:
+                    log.error(
+                        "supabase_list_providers_failed",
+                        status=resp.status_code,
+                        body=resp.text[:300],
+                        user_id=target_user,
+                    )
+                    if is_prod:
+                        raise RuntimeError(
+                            f"DATABASE_QUERY_FAILURE: Failed to query provider credentials from Supabase (HTTP {resp.status_code}): {resp.text[:200]}"
+                        )
+        except httpx.HTTPError as exc:
+            log.error("supabase_list_providers_network_error", error=str(exc), user_id=target_user)
+            if is_prod:
+                raise RuntimeError(f"DATABASE_CONNECTION_FAILURE: Could not communicate with Supabase: {exc}") from exc
+    elif is_prod:
+        raise RuntimeError("Supabase PostgreSQL persistence is required in production but Supabase is not configured.")
 
-    # 2. Local fallback
+    # 2. Local fallback for development only
+    ensure_provider_table()
     with _get_conn() as conn:
         rows = conn.execute(
             "SELECT id FROM user_provider_credentials WHERE user_id = ? ORDER BY is_active DESC, updated_at DESC",
-            (user_id,),
+            (target_user,),
         ).fetchall()
-    return [_safe_record(r["id"]) for r in rows if _safe_record(r["id"]) is not None]
+    return [_safe_record(r["id"], user_id=target_user) for r in rows if _safe_record(r["id"], user_id=target_user) is not None]
 
 
 def get_provider(cred_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Get a safe provider record. Scoped by user_id if provided. Never returns raw key."""
-    ensure_provider_table()
+    settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    if is_prod and (not effective_user or effective_user == "default_user"):
+        raise ValueError("Valid authenticated user_id required in production")
+
+    target_user = effective_user or user_id
 
     # 1. Supabase PostgreSQL
     if _is_supabase_ready():
         try:
-            settings = get_settings()
             query = f"id=eq.{cred_id}"
-            if user_id:
-                query += f"&user_id=eq.{user_id}"
+            if target_user:
+                query += f"&user_id=eq.{target_user}"
             url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?{query}&select=*"
             with httpx.Client(timeout=8.0) as client:
                 resp = client.get(url, headers=_supabase_headers())
-                if resp.status_code == 200 and resp.json():
-                    row = resp.json()[0]
-                    row.pop("encrypted_key", None)
-                    row["is_active"] = bool(row.get("is_active"))
-                    return row
-        except Exception:
-            pass
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data:
+                        row = data[0]
+                        row.pop("encrypted_key", None)
+                        row["is_active"] = bool(row.get("is_active"))
+                        return row
+                    return None
+                else:
+                    log.error("supabase_get_provider_failed", status=resp.status_code, cred_id=cred_id)
+                    if is_prod:
+                        raise RuntimeError(f"Failed to fetch provider credential (HTTP {resp.status_code})")
+        except httpx.HTTPError as exc:
+            if is_prod:
+                raise RuntimeError(f"Database error fetching provider: {exc}") from exc
+    elif is_prod:
+        raise RuntimeError("Supabase PostgreSQL persistence is required in production.")
 
-    # 2. Local fallback
-    return _safe_record(cred_id, user_id=user_id)
-
-
-def set_active_provider(cred_id: str, user_id: str = "default_user") -> bool:
-    """Designate a specific provider as active for this user."""
+    # 2. Local fallback (development only)
     ensure_provider_table()
+    return _safe_record(cred_id, user_id=target_user)
+
+
+def set_active_provider(cred_id: str, user_id: Optional[str] = None) -> bool:
+    """Designate a specific provider as active for this user."""
+    settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    if is_prod and (not effective_user or effective_user == "default_user"):
+        raise ValueError("Valid authenticated user_id required in production")
+
+    target_user = effective_user or "default_user"
     now = datetime.now(timezone.utc).isoformat()
 
-    # Verify ownership
-    target = None
-    with _get_conn() as conn:
-        target = conn.execute(
-            "SELECT provider FROM user_provider_credentials WHERE id = ? AND user_id = ?",
-            (cred_id, user_id),
-        ).fetchone()
-
-    # Supabase PostgreSQL check if not in local
-    if not target and _is_supabase_ready():
+    # 1. Supabase PostgreSQL
+    if _is_supabase_ready():
+        url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?id=eq.{cred_id}&user_id=eq.{target_user}&select=provider"
         try:
-            settings = get_settings()
-            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?id=eq.{cred_id}&user_id=eq.{user_id}&select=provider"
             with httpx.Client(timeout=8.0) as client:
                 resp = client.get(url, headers=_supabase_headers())
                 if resp.status_code == 200 and resp.json():
                     target = resp.json()[0]
-        except Exception:
-            pass
+                    prov_type = target.get("provider", "")
+                    base = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials"
+                    if prov_type not in ("jev", "tavily", "web_search"):
+                        client.patch(
+                            f"{base}?user_id=eq.{target_user}&provider=not.in.(jev,tavily,web_search)",
+                            headers=_supabase_headers(),
+                            json={"is_active": 0, "updated_at": now},
+                        )
+                    act_resp = client.patch(
+                        f"{base}?id=eq.{cred_id}&user_id=eq.{target_user}",
+                        headers=_supabase_headers(),
+                        json={"is_active": 1, "updated_at": now},
+                    )
+                    return act_resp.status_code in (200, 204)
+                elif is_prod:
+                    return False
+        except Exception as exc:
+            log.warning("supabase_set_active_notice", error=str(exc))
+            if is_prod:
+                raise RuntimeError(f"Database error setting active provider: {exc}") from exc
+    elif is_prod:
+        raise RuntimeError("Supabase PostgreSQL persistence is required in production.")
+
+    # 2. Local fallback (development only)
+    ensure_provider_table()
+    target = None
+    with _get_conn() as conn:
+        target = conn.execute(
+            "SELECT provider FROM user_provider_credentials WHERE id = ? AND user_id = ?",
+            (cred_id, target_user),
+        ).fetchone()
 
     if not target:
         return False
 
     prov_type = target["provider"]
-
-    if _is_supabase_ready():
-        try:
-            settings = get_settings()
-            base = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials"
-            with httpx.Client(timeout=8.0) as client:
-                if prov_type not in ("jev", "tavily", "web_search"):
-                    client.patch(
-                        f"{base}?user_id=eq.{user_id}&provider=not.in.(jev,tavily,web_search)",
-                        headers=_supabase_headers(),
-                        json={"is_active": 0, "updated_at": now},
-                    )
-                client.patch(
-                    f"{base}?id=eq.{cred_id}&user_id=eq.{user_id}",
-                    headers=_supabase_headers(),
-                    json={"is_active": 1, "updated_at": now},
-                )
-        except Exception as exc:
-            log.warning("supabase_set_active_notice", error=str(exc))
-
     with _get_conn() as conn:
         if prov_type not in ("jev", "tavily", "web_search"):
             conn.execute(
                 "UPDATE user_provider_credentials SET is_active = 0 WHERE user_id = ? AND provider NOT IN ('jev', 'tavily', 'web_search')",
-                (user_id,),
+                (target_user,),
             )
         conn.execute(
             "UPDATE user_provider_credentials SET is_active = 1, updated_at = ? WHERE id = ? AND user_id = ?",
-            (now, cred_id, user_id),
+            (now, cred_id, target_user),
         )
         conn.commit()
     return True
 
 
-def update_provider(cred_id: str, updates: Dict[str, Any], user_id: str = "default_user") -> Optional[Dict[str, Any]]:
+def update_provider(cred_id: str, updates: Dict[str, Any], user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Update provider fields. Encrypts new key if provided. Scoped to user_id."""
-    ensure_provider_table()
+    settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    if is_prod and (not effective_user or effective_user == "default_user"):
+        raise ValueError("Valid authenticated user_id required in production")
+
+    target_user = effective_user or "default_user"
     now = datetime.now(timezone.utc).isoformat()
-    fields = []
-    values = []
     supabase_payload: Dict[str, Any] = {"updated_at": now}
 
     if "api_key" in updates and updates["api_key"]:
         raw_key = updates["api_key"].strip()
         enc = encrypt_provider_key(raw_key)
         masked = mask_provider_key(raw_key)
-        fields.append("encrypted_key = ?")
-        values.append(enc)
-        fields.append("key_masked = ?")
-        values.append(masked)
         supabase_payload["encrypted_key"] = enc
         supabase_payload["key_masked"] = masked
     if "model" in updates:
-        fields.append("model = ?")
-        values.append(updates["model"])
         supabase_payload["model"] = updates["model"]
     if "label" in updates:
-        fields.append("label = ?")
-        values.append(updates["label"])
         supabase_payload["label"] = updates["label"]
     if "is_active" in updates:
-        fields.append("is_active = ?")
-        values.append(1 if updates["is_active"] else 0)
         supabase_payload["is_active"] = 1 if updates["is_active"] else 0
 
     if _is_supabase_ready():
         try:
-            settings = get_settings()
-            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?id=eq.{cred_id}&user_id=eq.{user_id}"
+            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?id=eq.{cred_id}&user_id=eq.{target_user}"
             with httpx.Client(timeout=8.0) as client:
-                client.patch(url, headers=_supabase_headers(), json=supabase_payload)
+                resp = client.patch(url, headers=_supabase_headers(), json=supabase_payload)
+                if resp.status_code not in (200, 204) and is_prod:
+                    raise RuntimeError(f"Supabase update failed (HTTP {resp.status_code})")
         except Exception as exc:
             log.warning("supabase_update_provider_notice", error=str(exc))
+            if is_prod:
+                raise RuntimeError(f"Database error updating provider: {exc}") from exc
+    elif is_prod:
+        raise RuntimeError("Supabase PostgreSQL persistence is required in production.")
 
-    if fields:
-        fields.append("updated_at = ?")
-        values.append(now)
-        values.append(cred_id)
-        values.append(user_id)
-        with _get_conn() as conn:
-            conn.execute(
-                f"UPDATE user_provider_credentials SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
-                values,
-            )
-            conn.commit()
+    if not is_prod:
+        ensure_provider_table()
+        fields = []
+        values = []
+        if "encrypted_key" in supabase_payload:
+            fields.append("encrypted_key = ?")
+            values.append(supabase_payload["encrypted_key"])
+            fields.append("key_masked = ?")
+            values.append(supabase_payload["key_masked"])
+        if "model" in supabase_payload:
+            fields.append("model = ?")
+            values.append(supabase_payload["model"])
+        if "label" in supabase_payload:
+            fields.append("label = ?")
+            values.append(supabase_payload["label"])
+        if "is_active" in supabase_payload:
+            fields.append("is_active = ?")
+            values.append(supabase_payload["is_active"])
+        if fields:
+            fields.append("updated_at = ?")
+            values.append(now)
+            values.append(cred_id)
+            values.append(target_user)
+            with _get_conn() as conn:
+                conn.execute(
+                    f"UPDATE user_provider_credentials SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
+                    values,
+                )
+                conn.commit()
 
-    return get_provider(cred_id, user_id=user_id)
+    return get_provider(cred_id, user_id=target_user)
 
 
-def delete_provider(cred_id: str, user_id: str = "default_user") -> bool:
+def delete_provider(cred_id: str, user_id: Optional[str] = None) -> bool:
     """Delete a provider credential scoped to user_id."""
-    ensure_provider_table()
+    settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    if is_prod and (not effective_user or effective_user == "default_user"):
+        raise ValueError("Valid authenticated user_id required in production")
+
+    target_user = effective_user or "default_user"
     deleted = False
 
     if _is_supabase_ready():
         try:
-            settings = get_settings()
-            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?id=eq.{cred_id}&user_id=eq.{user_id}"
+            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?id=eq.{cred_id}&user_id=eq.{target_user}"
             with httpx.Client(timeout=8.0) as client:
                 resp = client.delete(url, headers=_supabase_headers())
-                if resp.status_code in {200, 204}:
+                if resp.status_code in (200, 204):
                     deleted = True
-        except Exception:
-            pass
+                elif is_prod:
+                    return False
+        except Exception as exc:
+            if is_prod:
+                raise RuntimeError(f"Failed to delete provider from Supabase: {exc}") from exc
+    elif is_prod:
+        raise RuntimeError("Supabase PostgreSQL persistence is required in production.")
 
-    with _get_conn() as conn:
-        res = conn.execute(
-            "DELETE FROM user_provider_credentials WHERE id = ? AND user_id = ?",
-            (cred_id, user_id),
-        )
-        conn.commit()
-        if res.rowcount > 0:
-            deleted = True
+    if not is_prod:
+        ensure_provider_table()
+        with _get_conn() as conn:
+            res = conn.execute(
+                "DELETE FROM user_provider_credentials WHERE id = ? AND user_id = ?",
+                (cred_id, target_user),
+            )
+            conn.commit()
+            if res.rowcount > 0:
+                deleted = True
 
     return deleted
 
 
 async def test_provider_connection(cred_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
     """Test whether the stored API key works for the provider. Never logs or leaks raw key."""
-    ensure_provider_table()
+    settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    target_user = effective_user or user_id
+
     row = None
 
     if _is_supabase_ready():
         try:
-            settings = get_settings()
             query = f"id=eq.{cred_id}"
-            if user_id:
-                query += f"&user_id=eq.{user_id}"
+            if target_user:
+                query += f"&user_id=eq.{target_user}"
             url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?{query}&select=*"
             async with httpx.AsyncClient(timeout=8.0) as client:
                 resp = await client.get(url, headers=_supabase_headers())
@@ -397,12 +543,13 @@ async def test_provider_connection(cred_id: str, user_id: Optional[str] = None) 
         except Exception:
             pass
 
-    if not row:
+    if not row and not is_prod:
+        ensure_provider_table()
         with _get_conn() as conn:
-            if user_id:
+            if target_user:
                 row = conn.execute(
                     "SELECT * FROM user_provider_credentials WHERE id = ? AND user_id = ?",
-                    (cred_id, user_id),
+                    (cred_id, target_user),
                 ).fetchone()
             else:
                 row = conn.execute(
@@ -416,7 +563,7 @@ async def test_provider_connection(cred_id: str, user_id: Optional[str] = None) 
     try:
         raw_key = decrypt_provider_key(row["encrypted_key"])
         provider = row["provider"]
-        model = row["model"]
+        model = row.get("model") or ""
 
         result = await _test_connection(provider, raw_key, model)
 
@@ -426,7 +573,6 @@ async def test_provider_connection(cred_id: str, user_id: Optional[str] = None) 
         # Update status in Supabase & local DB
         if _is_supabase_ready():
             try:
-                settings = get_settings()
                 url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?id=eq.{cred_id}"
                 async with httpx.AsyncClient(timeout=8.0) as client:
                     await client.patch(
@@ -437,12 +583,13 @@ async def test_provider_connection(cred_id: str, user_id: Optional[str] = None) 
             except Exception:
                 pass
 
-        with _get_conn() as conn:
-            conn.execute(
-                "UPDATE user_provider_credentials SET status = ?, last_tested_at = ?, updated_at = ? WHERE id = ?",
-                (status, now, now, cred_id),
-            )
-            conn.commit()
+        if not is_prod:
+            with _get_conn() as conn:
+                conn.execute(
+                    "UPDATE user_provider_credentials SET status = ?, last_tested_at = ?, updated_at = ? WHERE id = ?",
+                    (status, now, now, cred_id),
+                )
+                conn.commit()
 
         return result
     except Exception as exc:
@@ -545,34 +692,78 @@ def get_active_stored_provider(user_id: Optional[str] = None) -> Optional[Dict[s
 
     CRITICAL SECURITY RULE: Must always scope to the authenticated user_id.
     Never return another user's provider key.
+    Never substitute 'default_user' in production.
     """
-    ensure_provider_table()
-    target_user = user_id or "default_user"
+    settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    if is_prod and (not effective_user or effective_user == "default_user"):
+        log.warning("get_active_stored_provider_missing_user_in_production")
+        raise ValueError("AUTHENTICATED_USER_REQUIRED: Authenticated user context is required to resolve provider credentials in production.")
+
+    target_user = effective_user or "default_user"
 
     # 1. Supabase PostgreSQL
     if _is_supabase_ready():
+        url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?user_id=eq.{target_user}&is_active=eq.1&provider=not.in.(jev,tavily,web_search)&order=updated_at.desc&limit=1"
         try:
-            settings = get_settings()
-            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?user_id=eq.{target_user}&is_active=eq.1&provider=not.in.(jev,tavily,web_search)&order=updated_at.desc&limit=1"
-            with httpx.Client(timeout=6.0) as client:
+            with httpx.Client(timeout=8.0) as client:
                 resp = client.get(url, headers=_supabase_headers())
-                if resp.status_code == 200 and resp.json():
-                    row = resp.json()[0]
-                    raw_key = decrypt_provider_key(row["encrypted_key"])
-                    if raw_key and raw_key.strip():
-                        return {
-                            "id": row["id"],
-                            "provider": row["provider"],
-                            "api_key": raw_key.strip(),
-                            "model": row["model"],
-                            "label": row["label"],
-                            "status": row["status"],
-                            "key_masked": row["key_masked"],
-                        }
-        except Exception as exc:
-            log.warning("failed_querying_supabase_active_provider", error=str(exc))
+                if resp.status_code == 200:
+                    rows = resp.json()
+                    if not rows:
+                        # Fallback: check any core provider for this user if none explicitly marked active
+                        f_url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?user_id=eq.{target_user}&provider=not.in.(jev,tavily,web_search)&order=updated_at.desc&limit=1"
+                        f_resp = client.get(f_url, headers=_supabase_headers())
+                        if f_resp.status_code == 200:
+                            rows = f_resp.json()
+                    if rows:
+                        row = rows[0]
+                        try:
+                            raw_key = decrypt_provider_key(row["encrypted_key"])
+                            if raw_key and raw_key.strip():
+                                return {
+                                    "id": row["id"],
+                                    "provider": row["provider"],
+                                    "api_key": raw_key.strip(),
+                                    "model": row.get("model") or "",
+                                    "label": row.get("label") or "",
+                                    "status": row.get("status") or "connected",
+                                    "key_masked": row.get("key_masked") or "",
+                                }
+                        except Exception as exc:
+                            log.error(
+                                "provider_credential_decryption_failed",
+                                user_id=target_user,
+                                provider=row.get("provider"),
+                                error_type=type(exc).__name__,
+                            )
+                            raise ValueError(
+                                f"PROVIDER_CREDENTIAL_DECRYPTION_FAILED: Decryption failed for provider '{row.get('provider')}'"
+                            ) from exc
+                    return None
+                else:
+                    log.error(
+                        "supabase_get_active_stored_provider_failed",
+                        status=resp.status_code,
+                        body=resp.text[:300],
+                        user_id=target_user,
+                    )
+                    if is_prod:
+                        raise RuntimeError(
+                            f"DATABASE_QUERY_FAILURE: Failed to query active provider from Supabase (HTTP {resp.status_code})"
+                        )
+        except httpx.HTTPError as exc:
+            log.error("supabase_get_active_provider_network_error", error=str(exc), user_id=target_user)
+            if is_prod:
+                raise RuntimeError(f"DATABASE_CONNECTION_FAILURE: Supabase query error: {exc}") from exc
+    elif is_prod:
+        raise RuntimeError("Supabase PostgreSQL persistence is required in production but Supabase is not configured.")
 
-    # 2. Local fallback
+    # 2. Local fallback (development only)
+    ensure_provider_table()
     with _get_conn() as conn:
         row = conn.execute(
             """
@@ -611,37 +802,72 @@ def get_active_stored_provider(user_id: Optional[str] = None) -> Optional[Dict[s
                     }
             except Exception as exc:
                 log.warning("failed_decrypting_stored_provider_key", error=str(exc))
+                raise ValueError(f"PROVIDER_CREDENTIAL_DECRYPTION_FAILED: {exc}") from exc
 
     return None
 
 
 def get_gemini_credentials(user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Retrieve Google Gemini credentials if configured."""
-    ensure_provider_table()
-    target_user = user_id or "default_user"
-
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM user_provider_credentials WHERE user_id = ? AND provider IN ('google', 'gemini') ORDER BY updated_at DESC LIMIT 1",
-            (target_user,),
-        ).fetchone()
-        if row:
-            try:
-                raw_key = decrypt_provider_key(row["encrypted_key"])
-                if raw_key and raw_key.strip():
-                    return {
-                        "id": row["id"],
-                        "provider": "google",
-                        "api_key": raw_key.strip(),
-                        "model": row["model"] or "gemini-2.0-flash",
-                        "label": row["label"] or "Google Gemini",
-                        "status": row["status"],
-                        "key_masked": row["key_masked"],
-                    }
-            except Exception as exc:
-                log.warning("failed_decrypting_gemini_key", error=str(exc))
-
+    """Retrieve Google Gemini credentials if configured, querying Supabase first."""
     settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    if is_prod and (not effective_user or effective_user == "default_user"):
+        effective_user = None
+
+    target_user = effective_user or "default_user"
+
+    # 1. Supabase PostgreSQL
+    if _is_supabase_ready() and effective_user:
+        url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?user_id=eq.{target_user}&provider=in.(google,gemini)&order=updated_at.desc&limit=1"
+        try:
+            with httpx.Client(timeout=6.0) as client:
+                resp = client.get(url, headers=_supabase_headers())
+                if resp.status_code == 200:
+                    rows = resp.json()
+                    if rows:
+                        row = rows[0]
+                        raw_key = decrypt_provider_key(row["encrypted_key"])
+                        if raw_key and raw_key.strip():
+                            return {
+                                "id": row["id"],
+                                "provider": "google",
+                                "api_key": raw_key.strip(),
+                                "model": row.get("model") or "gemini-2.0-flash",
+                                "label": row.get("label") or "Google Gemini",
+                                "status": row.get("status") or "connected",
+                                "key_masked": row.get("key_masked") or "",
+                            }
+        except Exception as exc:
+            log.warning("supabase_get_gemini_credentials_notice", error=str(exc))
+
+    # 2. Local fallback (development only)
+    if not is_prod:
+        ensure_provider_table()
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM user_provider_credentials WHERE user_id = ? AND provider IN ('google', 'gemini') ORDER BY updated_at DESC LIMIT 1",
+                (target_user,),
+            ).fetchone()
+            if row:
+                try:
+                    raw_key = decrypt_provider_key(row["encrypted_key"])
+                    if raw_key and raw_key.strip():
+                        return {
+                            "id": row["id"],
+                            "provider": "google",
+                            "api_key": raw_key.strip(),
+                            "model": row["model"] or "gemini-2.0-flash",
+                            "label": row["label"] or "Google Gemini",
+                            "status": row["status"],
+                            "key_masked": row["key_masked"],
+                        }
+                except Exception as exc:
+                    log.warning("failed_decrypting_gemini_key", error=str(exc))
+
+    # 3. Environment variable fallback
     if settings.gemini_api_key and settings.gemini_api_key.strip():
         raw_key = settings.gemini_api_key.strip()
         return {
@@ -657,31 +883,64 @@ def get_gemini_credentials(user_id: Optional[str] = None) -> Optional[Dict[str, 
 
 
 def get_jev_credentials(user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Retrieve JEV credentials if configured."""
-    ensure_provider_table()
-    target_user = user_id or "default_user"
-
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM user_provider_credentials WHERE user_id = ? AND provider = 'jev' ORDER BY updated_at DESC LIMIT 1",
-            (target_user,),
-        ).fetchone()
-        if row:
-            try:
-                raw_key = decrypt_provider_key(row["encrypted_key"])
-                if raw_key and raw_key.strip():
-                    return {
-                        "id": row["id"],
-                        "provider": "jev",
-                        "api_key": raw_key.strip(),
-                        "model": row["model"] or "jev-latest",
-                        "status": row["status"],
-                        "key_masked": row["key_masked"],
-                    }
-            except Exception:
-                pass
-
+    """Retrieve JEV credentials if configured, querying Supabase first."""
     settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    if is_prod and (not effective_user or effective_user == "default_user"):
+        effective_user = None
+
+    target_user = effective_user or "default_user"
+
+    # 1. Supabase PostgreSQL
+    if _is_supabase_ready() and effective_user:
+        url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?user_id=eq.{target_user}&provider=eq.jev&order=updated_at.desc&limit=1"
+        try:
+            with httpx.Client(timeout=6.0) as client:
+                resp = client.get(url, headers=_supabase_headers())
+                if resp.status_code == 200:
+                    rows = resp.json()
+                    if rows:
+                        row = rows[0]
+                        raw_key = decrypt_provider_key(row["encrypted_key"])
+                        if raw_key and raw_key.strip():
+                            return {
+                                "id": row["id"],
+                                "provider": "jev",
+                                "api_key": raw_key.strip(),
+                                "model": row.get("model") or settings.jev_model or "jev-latest",
+                                "status": row.get("status") or "connected",
+                                "key_masked": row.get("key_masked") or "",
+                            }
+        except Exception as exc:
+            log.warning("supabase_get_jev_credentials_notice", error=str(exc))
+
+    # 2. Local fallback (development only)
+    if not is_prod:
+        ensure_provider_table()
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM user_provider_credentials WHERE user_id = ? AND provider = 'jev' ORDER BY updated_at DESC LIMIT 1",
+                (target_user,),
+            ).fetchone()
+            if row:
+                try:
+                    raw_key = decrypt_provider_key(row["encrypted_key"])
+                    if raw_key and raw_key.strip():
+                        return {
+                            "id": row["id"],
+                            "provider": "jev",
+                            "api_key": raw_key.strip(),
+                            "model": row["model"] or "jev-latest",
+                            "status": row["status"],
+                            "key_masked": row["key_masked"],
+                        }
+                except Exception:
+                    pass
+
+    # 3. Environment variable fallback
     if settings.jev_api_key and settings.jev_api_key.strip():
         raw_key = settings.jev_api_key.strip()
         return {
@@ -696,30 +955,62 @@ def get_jev_credentials(user_id: Optional[str] = None) -> Optional[Dict[str, Any
 
 
 def get_web_search_credentials(user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Retrieve Web Search (Tavily) credentials if configured."""
-    ensure_provider_table()
-    target_user = user_id or "default_user"
-
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM user_provider_credentials WHERE user_id = ? AND provider IN ('tavily', 'web_search') ORDER BY updated_at DESC LIMIT 1",
-            (target_user,),
-        ).fetchone()
-        if row:
-            try:
-                raw_key = decrypt_provider_key(row["encrypted_key"])
-                if raw_key and raw_key.strip():
-                    return {
-                        "id": row["id"],
-                        "provider": "tavily",
-                        "api_key": raw_key.strip(),
-                        "status": row["status"],
-                        "key_masked": row["key_masked"],
-                    }
-            except Exception:
-                pass
-
+    """Retrieve Web Search (Tavily) credentials if configured, querying Supabase first."""
     settings = get_settings()
+    is_prod = settings.environment.lower() == "production"
+
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+    if is_prod and (not effective_user or effective_user == "default_user"):
+        effective_user = None
+
+    target_user = effective_user or "default_user"
+
+    # 1. Supabase PostgreSQL
+    if _is_supabase_ready() and effective_user:
+        url = f"{settings.supabase_url.rstrip('/')}/rest/v1/user_provider_credentials?user_id=eq.{target_user}&provider=in.(tavily,web_search)&order=updated_at.desc&limit=1"
+        try:
+            with httpx.Client(timeout=6.0) as client:
+                resp = client.get(url, headers=_supabase_headers())
+                if resp.status_code == 200:
+                    rows = resp.json()
+                    if rows:
+                        row = rows[0]
+                        raw_key = decrypt_provider_key(row["encrypted_key"])
+                        if raw_key and raw_key.strip():
+                            return {
+                                "id": row["id"],
+                                "provider": "tavily",
+                                "api_key": raw_key.strip(),
+                                "status": row.get("status") or "connected",
+                                "key_masked": row.get("key_masked") or "",
+                            }
+        except Exception as exc:
+            log.warning("supabase_get_web_search_credentials_notice", error=str(exc))
+
+    # 2. Local fallback (development only)
+    if not is_prod:
+        ensure_provider_table()
+        with _get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM user_provider_credentials WHERE user_id = ? AND provider IN ('tavily', 'web_search') ORDER BY updated_at DESC LIMIT 1",
+                (target_user,),
+            ).fetchone()
+            if row:
+                try:
+                    raw_key = decrypt_provider_key(row["encrypted_key"])
+                    if raw_key and raw_key.strip():
+                        return {
+                            "id": row["id"],
+                            "provider": "tavily",
+                            "api_key": raw_key.strip(),
+                            "status": row["status"],
+                            "key_masked": row["key_masked"],
+                        }
+                except Exception:
+                    pass
+
+    # 3. Environment variable fallback
     if settings.tavily_api_key and settings.tavily_api_key.strip():
         raw_key = settings.tavily_api_key.strip()
         return {
@@ -734,13 +1025,16 @@ def get_web_search_credentials(user_id: Optional[str] = None) -> Optional[Dict[s
 
 def get_system_capabilities(user_id: Optional[str] = None) -> Dict[str, Any]:
     """Evaluate system capabilities across required AI provider and optional layers. Real state only."""
+    from security.auth import get_context_user_id
+    effective_user = user_id or get_context_user_id()
+
     active_prov_info = None
     try:
         try:
             from providers.factory import get_active_provider
         except ImportError:
             from backend.providers.factory import get_active_provider
-        prov = get_active_provider(user_id=user_id)
+        prov = get_active_provider(user_id=effective_user)
         active_prov_info = {
             "connected": True,
             "provider": prov.provider_id,
@@ -750,8 +1044,8 @@ def get_system_capabilities(user_id: Optional[str] = None) -> Dict[str, Any]:
     except Exception:
         active_prov_info = None
 
-    jev = get_jev_credentials(user_id=user_id)
-    web = get_web_search_credentials(user_id=user_id)
+    jev = get_jev_credentials(user_id=effective_user)
+    web = get_web_search_credentials(user_id=effective_user)
 
     # RAG vector store check (pgvector or local)
     rag_ok = True

@@ -151,15 +151,20 @@ async def create_provider_credential(
     valid_ids = [p["id"] for p in SUPPORTED_PROVIDERS]
     if p_norm not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unsupported provider: {body.provider}")
-    record = create_provider(
-        provider=p_norm,
-        api_key=body.api_key,
-        model=body.model,
-        label=body.label,
-        user_id=user_id,
-        is_active=body.is_active,
-    )
-    return record
+    try:
+        record = create_provider(
+            provider=p_norm,
+            api_key=body.api_key,
+            model=body.model,
+            label=body.label,
+            user_id=user_id,
+            is_active=body.is_active,
+        )
+        return record
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("")
@@ -170,7 +175,12 @@ async def list_provider_credentials(
 ):
     """List all configured providers for the authenticated user. Never returns raw keys."""
     user_id = await get_current_user_id(request, authorization, x_user_id)
-    return {"providers": list_providers(user_id=user_id)}
+    try:
+        return {"providers": list_providers(user_id=user_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/{cred_id}")
@@ -182,7 +192,12 @@ async def get_provider_credential(
 ):
     """Get a specific provider credential. Returns 404 if not found or not owned."""
     user_id = await get_current_user_id(request, authorization, x_user_id)
-    record = get_provider(cred_id, user_id=user_id)
+    try:
+        record = get_provider(cred_id, user_id=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     if not record:
         raise HTTPException(status_code=404, detail="Provider not found")
     return record
@@ -197,7 +212,12 @@ async def activate_provider_credential(
 ):
     """Set provider as active AI provider for the authenticated user."""
     user_id = await get_current_user_id(request, authorization, x_user_id)
-    ok = set_active_provider(cred_id, user_id=user_id)
+    try:
+        ok = set_active_provider(cred_id, user_id=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     if not ok:
         raise HTTPException(status_code=404, detail="Provider not found")
     return {"status": "activated", "id": cred_id}
@@ -213,12 +233,22 @@ async def update_provider_credential(
 ):
     """Update provider fields for authenticated user."""
     user_id = await get_current_user_id(request, authorization, x_user_id)
-    record = get_provider(cred_id, user_id=user_id)
+    try:
+        record = get_provider(cred_id, user_id=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     if not record:
         raise HTTPException(status_code=404, detail="Provider not found")
     updates = body.model_dump(exclude_none=True)
-    updated = update_provider(cred_id, updates, user_id=user_id)
-    return updated
+    try:
+        updated = update_provider(cred_id, updates, user_id=user_id)
+        return updated
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.delete("/{cred_id}")
@@ -230,7 +260,12 @@ async def delete_provider_credential(
 ):
     """Delete a provider credential. Returns 404 if not found or not owned."""
     user_id = await get_current_user_id(request, authorization, x_user_id)
-    ok = delete_provider(cred_id, user_id=user_id)
+    try:
+        ok = delete_provider(cred_id, user_id=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     if not ok:
         raise HTTPException(status_code=404, detail="Provider not found")
     return {"status": "deleted", "id": cred_id}
@@ -245,7 +280,12 @@ async def test_provider(
 ):
     """Test a provider connection. Scoped to authenticated user."""
     user_id = await get_current_user_id(request, authorization, x_user_id)
-    record = get_provider(cred_id, user_id=user_id)
+    try:
+        record = get_provider(cred_id, user_id=user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     if not record:
         raise HTTPException(status_code=404, detail="Provider not found")
     result = await test_provider_connection(cred_id, user_id=user_id)

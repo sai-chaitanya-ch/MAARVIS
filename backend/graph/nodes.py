@@ -104,7 +104,7 @@ async def node_research(state: ConversationState) -> Dict[str, Any]:
             from services.provider_service import get_web_search_credentials
         except ImportError:
             from backend.services.provider_service import get_web_search_credentials
-        web_cred = get_web_search_credentials()
+        web_cred = get_web_search_credentials(user_id=state.get("user_id"))
     except Exception:
         web_cred = None
 

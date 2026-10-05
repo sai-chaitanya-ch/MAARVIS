@@ -26,6 +26,11 @@ class NoProviderConfiguredError(AIProviderError):
     pass
 
 
+class ProviderDecryptionError(AIProviderError):
+    """Raised when an encrypted provider credential cannot be decrypted."""
+    pass
+
+
 class AIProvider(ABC):
     """Abstract interface for all MAARVIS AI providers."""
 

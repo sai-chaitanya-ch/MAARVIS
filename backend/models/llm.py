@@ -10,9 +10,11 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 try:
     from providers.base import AIProvider, AIProviderError, NoProviderConfiguredError
     from providers.factory import get_active_provider
+    from security.auth import get_context_user_id
 except ImportError:
     from backend.providers.base import AIProvider, AIProviderError, NoProviderConfiguredError
     from backend.providers.factory import get_active_provider
+    from backend.security.auth import get_context_user_id
 from utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -28,14 +30,19 @@ class LLMProvider:
 
     def get_provider(self, user_id: Optional[str] = None) -> AIProvider:
         """Resolve and return active AIProvider adapter."""
+        resolved_user = user_id or get_context_user_id()
         try:
-            return get_active_provider(user_id=user_id)
-        except NoProviderConfiguredError as exc:
+            return get_active_provider(user_id=resolved_user)
+        except (NoProviderConfiguredError, AIProviderError) as exc:
             raise LLMError(str(exc)) from exc
 
-    def get_active_route(self, requested_model: Optional[str] = None) -> tuple[str, Dict[str, str], str, str]:
+    def get_active_route(
+        self,
+        requested_model: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> tuple[str, Dict[str, str], str, str]:
         """Diagnostic helper returning endpoint info for the active provider."""
-        provider = self.get_provider()
+        provider = self.get_provider(user_id=user_id)
         active_model = requested_model or provider.model
         headers = {}
         if hasattr(provider, "get_headers"):
@@ -47,6 +54,7 @@ class LLMProvider:
         self,
         messages: List[Dict[str, str]],
         *,
+        user_id: Optional[str] = None,
         model: Optional[str] = None,
         temperature: float = 0.2,
         max_tokens: int = 1800,
@@ -54,7 +62,7 @@ class LLMProvider:
     ) -> str:
         """Execute chat completion using active provider."""
         try:
-            provider = self.get_provider()
+            provider = self.get_provider(user_id=user_id)
         except (LLMError, NoProviderConfiguredError) as err:
             raise LLMError(str(err)) from err
 
@@ -73,13 +81,14 @@ class LLMProvider:
         self,
         messages: List[Dict[str, str]],
         *,
+        user_id: Optional[str] = None,
         model: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 1800,
     ) -> AsyncIterator[str]:
         """Stream chat tokens using active provider."""
         try:
-            provider = self.get_provider()
+            provider = self.get_provider(user_id=user_id)
         except (LLMError, NoProviderConfiguredError) as err:
             yield f"⚠️ {err}"
             return
