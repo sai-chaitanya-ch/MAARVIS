@@ -4,8 +4,11 @@ import ChatLayout from "./components/ChatLayout";
 import EvaluationLab from "./components/evaluation/EvaluationLab";
 import HistorySidebar from "./components/HistorySidebar";
 import SettingsModal, { SettingsTab } from "./components/SettingsModal";
+import AuthModal from "./components/AuthModal";
 import { useChat } from "./hooks/useChat";
 import { fetchCapabilities, SystemCapabilities } from "./lib/api";
+import { getCurrentUser, onAuthStateChange } from "./lib/supabase";
+import type { User } from "@supabase/supabase-js";
 
 export default function App() {
   const chat = useChat();
@@ -33,6 +36,8 @@ export default function App() {
     }
     return "general";
   });
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
 
   const refreshCapabilities = () => {
     fetchCapabilities().then(setCapabilities).catch(() => {});
@@ -42,7 +47,25 @@ export default function App() {
     refreshCapabilities();
   }, []);
 
+  useEffect(() => {
+    getCurrentUser().then(setUser).catch(() => {});
+    const { unsubscribe } = onAuthStateChange((event, session) => {
+      setUser(session?.user ?? null);
+      if (event === "SIGNED_IN") {
+        refreshCapabilities();
+      }
+    });
 
+    const handleUnauthorized = () => {
+      setShowAuthModal(true);
+    };
+    window.addEventListener("maarvis:unauthorized", handleUnauthorized);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener("maarvis:unauthorized", handleUnauthorized);
+    };
+  }, []);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -88,6 +111,12 @@ export default function App() {
               setSettingsTab("providers");
               setShowSettings(true);
             }}
+            user={user}
+            onOpenAuth={() => setShowAuthModal(true)}
+            onOpenAccount={() => {
+              setSettingsTab("account");
+              setShowSettings(true);
+            }}
           />
 
           {/* History Sidebar */}
@@ -109,6 +138,15 @@ export default function App() {
               }}
             />
           )}
+
+          {/* Supabase Auth Modal */}
+          <AuthModal
+            isOpen={showAuthModal}
+            onClose={() => setShowAuthModal(false)}
+            onAuthSuccess={() => {
+              refreshCapabilities();
+            }}
+          />
 
           {/* Onboarding Notice Banner (If no AI provider is configured) */}
           {capabilities && !capabilities.ai_provider?.connected && !capabilities.gemini?.connected && !bannerDismissed && (
@@ -159,6 +197,7 @@ export default function App() {
               setSettingsTab((tab as SettingsTab) || "general");
               setShowSettings(true);
             }}
+            onOpenAuth={() => setShowAuthModal(true)}
           />
         </>
       )}

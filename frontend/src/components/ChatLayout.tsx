@@ -20,6 +20,7 @@ interface ChatLayoutProps {
   mode?: string;
   onModeChange?: (mode: any) => void;
   onOpenSettings?: (tab?: string) => void;
+  onOpenAuth?: () => void;
 }
 
 export default function ChatLayout({
@@ -38,6 +39,7 @@ export default function ChatLayout({
   mode,
   onModeChange,
   onOpenSettings,
+  onOpenAuth,
 }: ChatLayoutProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -109,9 +111,20 @@ export default function ChatLayout({
 
           {/* Error Message banner if any */}
           {error && (
-            <div className="my-4 rounded-xl border border-rose-200/80 bg-rose-50/70 p-3 text-xs text-rose-800">
-              <p className="font-medium">Error processing request</p>
-              <p className="mt-0.5 text-[11px] text-rose-700/90">{error}</p>
+            <div className="my-4 rounded-xl border border-rose-200/80 bg-rose-50/70 p-3 text-xs text-rose-800 flex items-center justify-between gap-3">
+              <div>
+                <p className="font-medium">Error processing request</p>
+                <p className="mt-0.5 text-[11px] text-rose-700/90">{error}</p>
+              </div>
+              {error.toLowerCase().includes("authentication") && (
+                <button
+                  type="button"
+                  onClick={onOpenAuth || (() => onOpenSettings?.("account"))}
+                  className="shrink-0 rounded-lg bg-rose-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-950 transition cursor-pointer shadow-2xs"
+                >
+                  Sign In →
+                </button>
+              )}
             </div>
           )}
 

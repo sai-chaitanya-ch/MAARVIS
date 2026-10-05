@@ -41,6 +41,15 @@ import {
   StoredProvider as Provider,
   SupportedProviderInfo as SupportedProvider,
 } from "../lib/api";
+import {
+  getCurrentUser,
+  signOut as supabaseSignOut,
+  signInWithEmail,
+  signUpWithEmail,
+  isSupabaseConfigured,
+  onAuthStateChange,
+} from "../lib/supabase";
+import type { User as SupabaseUser } from "@supabase/supabase-js";
 
 export type SettingsTab = "general" | "providers" | "data" | "security" | "account";
 
@@ -53,6 +62,15 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [healthData, setHealthData] = useState<any>(null);
   const [capabilities, setCapabilities] = useState<SystemCapabilities | null>(null);
+
+  // Auth state
+  const [authUser, setAuthUser] = useState<SupabaseUser | null>(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authSuccess, setAuthSuccess] = useState<string | null>(null);
 
   // Providers state
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -78,6 +96,13 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
     fetchCapabilities()
       .then(setCapabilities)
       .catch(() => {});
+    getCurrentUser()
+      .then(setAuthUser)
+      .catch(() => {});
+    const { unsubscribe } = onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user ?? null);
+    });
+    return () => unsubscribe();
   }, []);
 
   const loadProvidersData = () => {
@@ -953,25 +978,177 @@ export default function SettingsModal({ initialTab = "general", onClose }: Setti
           {/* TAB 5: ACCOUNT */}
           {activeTab === "account" && (
             <div className="space-y-4 text-xs">
-              <div className="rounded-xl border border-[#E5E7EB] bg-[#F8F9FA] p-4 space-y-3">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-900 text-white font-bold text-sm">
-                    A
+              {authUser ? (
+                <div className="rounded-xl border border-[#E5E7EB] bg-[#F8F9FA] p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-neutral-900 text-white font-bold text-sm">
+                        {authUser.email?.charAt(0).toUpperCase() || "U"}
+                      </div>
+                      <div>
+                        <h5 className="font-bold text-neutral-900 text-sm">{authUser.email}</h5>
+                        <p className="text-emerald-700 text-[11px] font-medium flex items-center gap-1 mt-0.5">
+                          <CheckCircle2 size={11} /> Authenticated (Supabase Session)
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await supabaseSignOut();
+                        setAuthUser(null);
+                        setAuthSuccess(null);
+                      }}
+                      className="rounded-lg border border-[#E5E7EB] bg-white px-3 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50 transition cursor-pointer shadow-2xs"
+                    >
+                      Sign Out
+                    </button>
                   </div>
-                  <div>
-                    <h5 className="font-bold text-neutral-900 text-sm">Administrator Session</h5>
-                    <p className="text-neutral-500 text-[11px]">Local Development Workspace</p>
+
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-[#E5E7EB]">
+                    <div className="rounded-lg bg-white p-2.5 border border-[#E5E7EB]">
+                      <span className="text-neutral-400 block text-[10px] uppercase">User ID</span>
+                      <span className="font-mono text-neutral-900 font-semibold text-[10px] break-all">{authUser.id}</span>
+                    </div>
+                    <div className="rounded-lg bg-white p-2.5 border border-[#E5E7EB]">
+                      <span className="text-neutral-400 block text-[10px] uppercase">Auth Provider</span>
+                      <span className="font-mono text-neutral-900 font-semibold">Supabase Auth (JWT)</span>
+                    </div>
                   </div>
                 </div>
+              ) : (
+                <div className="rounded-xl border border-[#E5E7EB] bg-[#F8F9FA] p-4 space-y-3">
+                  <div>
+                    <h5 className="font-bold text-neutral-900 text-sm">
+                      {authMode === "signin" ? "Sign In to MAARVIS" : "Create Supabase Account"}
+                    </h5>
+                    <p className="text-neutral-500 text-[11px]">
+                      Authentication required to access user-scoped conversations, documents, and credentials.
+                    </p>
+                  </div>
 
-                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-[#E5E7EB]">
+                  {authError && (
+                    <div className="flex items-start gap-2 rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-rose-800 text-[11px]">
+                      <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                      <span>{authError}</span>
+                    </div>
+                  )}
+
+                  {authSuccess && (
+                    <div className="flex items-start gap-2 rounded-lg bg-emerald-50 border border-emerald-200 p-2.5 text-emerald-800 text-[11px]">
+                      <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
+                      <span>{authSuccess}</span>
+                    </div>
+                  )}
+
+                  <div className="flex border-b border-[#E5E7EB] gap-2 pb-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode("signin");
+                        setAuthError(null);
+                      }}
+                      className={`text-xs font-medium pb-1 border-b-2 transition cursor-pointer ${
+                        authMode === "signin" ? "border-neutral-900 text-neutral-900 font-semibold" : "border-transparent text-neutral-400"
+                      }`}
+                    >
+                      Sign In
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode("signup");
+                        setAuthError(null);
+                      }}
+                      className={`text-xs font-medium pb-1 border-b-2 transition cursor-pointer ${
+                        authMode === "signup" ? "border-neutral-900 text-neutral-900 font-semibold" : "border-transparent text-neutral-400"
+                      }`}
+                    >
+                      Sign Up
+                    </button>
+                  </div>
+
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      setAuthError(null);
+                      setAuthSuccess(null);
+                      if (!authEmail.trim() || !authPassword) {
+                        setAuthError("Email and password required.");
+                        return;
+                      }
+                      setAuthLoading(true);
+                      try {
+                        if (authMode === "signin") {
+                          const { user, error } = await signInWithEmail(authEmail.trim(), authPassword);
+                          if (error) setAuthError(error);
+                          else {
+                            setAuthUser(user);
+                            setAuthSuccess("Signed in successfully!");
+                          }
+                        } else {
+                          const { user, error, confirmationRequired } = await signUpWithEmail(authEmail.trim(), authPassword);
+                          if (error) setAuthError(error);
+                          else if (confirmationRequired) setAuthSuccess("Account created! Check email to confirm.");
+                          else {
+                            setAuthUser(user);
+                            setAuthSuccess("Account created and signed in!");
+                          }
+                        }
+                      } finally {
+                        setAuthLoading(false);
+                      }
+                    }}
+                    className="space-y-3 pt-1"
+                  >
+                    <div>
+                      <label className="block text-[11px] font-semibold text-neutral-700 mb-1">Email</label>
+                      <input
+                        type="email"
+                        required
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="user@example.com"
+                        className="w-full rounded-lg border border-[#E5E7EB] bg-white px-3 py-1.5 text-xs focus:border-neutral-900 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-neutral-700 mb-1">Password</label>
+                      <input
+                        type="password"
+                        required
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full rounded-lg border border-[#E5E7EB] bg-white px-3 py-1.5 text-xs focus:border-neutral-900 focus:outline-none"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={authLoading}
+                      className="rounded-lg bg-neutral-900 px-4 py-1.5 text-xs font-medium text-white hover:bg-neutral-800 transition disabled:opacity-40 cursor-pointer shadow-2xs inline-flex items-center gap-1.5"
+                    >
+                      {authLoading ? <Loader2 size={12} className="animate-spin" /> : null}
+                      <span>{authMode === "signin" ? "Sign In" : "Sign Up"}</span>
+                    </button>
+                  </form>
+                </div>
+              )}
+
+              <div className="rounded-xl border border-[#E5E7EB] bg-[#F8F9FA] p-4 space-y-3">
+                <span className="font-bold text-neutral-800 uppercase tracking-wider text-[10.5px] block">
+                  Environment & Platform
+                </span>
+                <div className="grid grid-cols-2 gap-3">
                   <div className="rounded-lg bg-white p-2.5 border border-[#E5E7EB]">
                     <span className="text-neutral-400 block text-[10px] uppercase">Platform Version</span>
                     <span className="font-mono text-neutral-900 font-semibold">MAARVIS v2.0.0</span>
                   </div>
                   <div className="rounded-lg bg-white p-2.5 border border-[#E5E7EB]">
-                    <span className="text-neutral-400 block text-[10px] uppercase">Environment</span>
-                    <span className="font-mono text-neutral-900 font-semibold">development</span>
+                    <span className="text-neutral-400 block text-[10px] uppercase">Supabase Status</span>
+                    <span className="font-mono text-neutral-900 font-semibold">
+                      {isSupabaseConfigured ? "Configured" : "Unconfigured"}
+                    </span>
                   </div>
                 </div>
               </div>
